@@ -101,9 +101,6 @@ impl DockerBuilder {
             bail!("Please install Docker to build the app https://docs.docker.com/engine/install/")
         }
 
-        // Enable BuildKit for all builds
-        docker_build_cmd.env("DOCKER_BUILDKIT", "1");
-
         docker_build_cmd.arg("build").arg(dest).arg("-t").arg(name);
 
         if self.options.quiet {
