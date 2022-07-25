@@ -7,10 +7,9 @@ use crate::nixpacks::{
     nix::pkg::Pkg,
     phase::{BuildPhase, InstallPhase, SetupPhase, StartPhase},
 };
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 const MIX_CACHE_DIR: &'static &str = &"/root/mix";
-const REL_NAME: &'static &str = &"release";
 
 pub struct ElixirProvider;
 
@@ -35,9 +34,7 @@ impl Provider for ElixirProvider {
     }
 
     fn build(&self, _app: &App, _env: &Environment) -> Result<Option<BuildPhase>> {
-        let mut build_phase = BuildPhase::new("mix compile".to_string());
-        build_phase.add_cmd(format!("mix release"));
-
+        let build_phase = BuildPhase::new("mix compile".to_string());
         Ok(Some(build_phase))
     }
 
