@@ -52,6 +52,8 @@ impl Provider for RustProvider {
             setup_phase.add_apt_pkgs(vec!["musl-tools".to_string()]);
         }
 
+        setup_phase.add_apt_pkgs(vec!["binutils".to_string()]);
+
         Ok(Some(setup_phase))
     }
 
@@ -236,7 +238,7 @@ impl RustProvider {
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     #[test]
     fn test_no_version() -> Result<()> {
@@ -282,7 +284,7 @@ mod test {
         assert_eq!(
             RustProvider::get_rust_pkg(
                 &App::new("./examples/rust-custom-toolchain")?,
-                &Environment::new(HashMap::from([(
+                &Environment::new(BTreeMap::from([(
                     "NIXPACKS_RUST_VERSION".to_string(),
                     "1.54.0".to_string()
                 )]))

@@ -253,6 +253,7 @@ fn test_yarn_custom_version() {
 fn test_yarn_berry() {
     let name = simple_build("./examples/node-yarn-berry");
     let output = run_image(name, None);
+
     assert!(output.contains("Hello from Yarn v2+"));
 }
 
@@ -548,4 +549,18 @@ fn test_ruby_rails() {
     remove_network(network_name);
 
     assert!(output.contains("Rails 7"));
+}
+
+#[test]
+fn test_clojure() {
+    let name = simple_build("./examples/clojure");
+    let output = run_image(name, None);
+    assert_eq!(output, "Hello, World From Clojure!");
+}
+
+#[test]
+fn test_clojure_ring_app() {
+    let name = simple_build("./examples/clojure-ring-app");
+    let output = run_image(name, None);
+    assert_eq!(output, "Started server on port 3000");
 }
