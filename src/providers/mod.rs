@@ -1,8 +1,4 @@
-use crate::nixpacks::{
-    app::{App, StaticAssets},
-    environment::{Environment, EnvironmentVariables},
-    phase::{BuildPhase, InstallPhase, SetupPhase, StartPhase},
-};
+use crate::nixpacks::{app::App, environment::Environment, plan::BuildPlan};
 use anyhow::Result;
 
 pub mod clojure;
@@ -27,26 +23,50 @@ pub mod zig;
 pub trait Provider {
     fn name(&self) -> &str;
     fn detect(&self, app: &App, _env: &Environment) -> Result<bool>;
-    fn setup(&self, _app: &App, _env: &Environment) -> Result<Option<SetupPhase>> {
-        Ok(None)
+    fn get_build_plan(&self, _app: &App, _environment: &Environment) -> Result<Option<BuildPlan>>;
+    fn metadata(&self, _app: &App, _env: &Environment) -> Result<ProviderMetadata> {
+        Ok(ProviderMetadata::default())
     }
-    fn install(&self, _app: &App, _env: &Environment) -> Result<Option<InstallPhase>> {
-        Ok(None)
+}
+
+#[derive(Default)]
+pub struct ProviderMetadata {
+    pub values: Option<Vec<String>>,
+}
+
+impl ProviderMetadata {
+    pub fn from(value_pairs: Vec<(bool, &str)>) -> ProviderMetadata {
+        let values = value_pairs
+            .into_iter()
+            .filter(|(include, _)| *include)
+            .map(|(_, value)| (*value).to_owned())
+            .collect();
+
+        ProviderMetadata {
+            values: Some(values),
+        }
     }
-    fn build(&self, _app: &App, _env: &Environment) -> Result<Option<BuildPhase>> {
-        Ok(None)
+
+    pub fn join_as_comma_separated(&self, provider_name: String) -> String {
+        let mut arr = vec![provider_name];
+        let mut labels_arr = match &self.values {
+            Some(v) => v.clone(),
+            _ => Vec::new(),
+        };
+
+        arr.append(labels_arr.as_mut());
+        arr.join(",")
     }
-    fn start(&self, _app: &App, _env: &Environment) -> Result<Option<StartPhase>> {
-        Ok(None)
-    }
-    fn static_assets(&self, _app: &App, _env: &Environment) -> Result<Option<StaticAssets>> {
-        Ok(None)
-    }
-    fn environment_variables(
-        &self,
-        _app: &App,
-        _env: &Environment,
-    ) -> Result<Option<EnvironmentVariables>> {
-        Ok(None)
-    }
+}
+
+#[test]
+fn test_join_as_comma_separated() {
+    let metadata = ProviderMetadata::from(vec![
+        (true, "test_tag"),
+        (false, "test_other_tag"),
+        (true, "test_tag_3"),
+    ]);
+
+    let tags_str = &metadata.join_as_comma_separated("my_provider".to_string());
+    assert_eq!(tags_str, "my_provider,test_tag,test_tag_3");
 }

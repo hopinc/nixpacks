@@ -3,13 +3,15 @@ use crate::nixpacks::{
     app::App,
     environment::Environment,
     nix::pkg::Pkg,
-    phase::{BuildPhase, InstallPhase, SetupPhase, StartPhase},
+    plan::{
+        phase::{Phase, StartPhase},
+        BuildPlan,
+    },
 };
 use anyhow::Result;
 use regex::Regex;
 
-const DEFAULT_JDK_PKG_NAME: &'static &str = &"jdk8";
-const LEIN_CACHE_DIR: &'static &str = &"~/.m2";
+const DEFAULT_JDK_PKG_NAME: &str = "jdk8";
 
 pub struct ClojureProvider {}
 
@@ -22,43 +24,31 @@ impl Provider for ClojureProvider {
         Ok(app.includes_file("project.clj"))
     }
 
-    fn install(&self, _app: &App, _env: &Environment) -> Result<Option<InstallPhase>> {
-        let mut install_phase = InstallPhase::new("".to_string());
-        install_phase.add_cache_directory(LEIN_CACHE_DIR.to_string());
-        Ok(Some(install_phase))
-    }
-
-    fn setup(&self, app: &App, env: &Environment) -> Result<Option<SetupPhase>> {
-        Ok(Some(SetupPhase::new(vec![
+    fn get_build_plan(&self, app: &App, env: &Environment) -> Result<Option<BuildPlan>> {
+        let setup = Phase::setup(Some(vec![
             Pkg::new("leiningen"),
             ClojureProvider::get_nix_jdk_package(app, env)?,
-        ])))
-    }
+        ]));
 
-    fn build(&self, app: &App, _env: &Environment) -> Result<Option<BuildPhase>> {
         let has_lein_ring_plugin = app
             .read_file("project.clj")?
             .to_lowercase()
             .contains("[lein-ring ");
 
-        let build_cmd = match has_lein_ring_plugin {
-            true => "lein ring uberjar",
-            false => "lein uberjar",
+        let build_cmd = if has_lein_ring_plugin {
+            "lein ring uberjar"
+        } else {
+            "lein uberjar"
         };
 
         // based on project config, uberjar can be created under ./target/uberjar or ./target, This ensure file will be found on the same place whatevery the project config is
         let move_file_cmd = "if [ -f /app/target/uberjar/*standalone.jar ]; then  mv /app/target/uberjar/*standalone.jar /app/target/*standalone.jar; fi";
+        let build = Phase::build(Some(format!("{}; {}", build_cmd, move_file_cmd)));
 
-        Ok(Some(BuildPhase::new(format!(
-            "{}; {}",
-            build_cmd, move_file_cmd
-        ))))
-    }
+        let start = StartPhase::new("bash -c \"java $JAVA_OPTS -jar /app/target/*standalone.jar\"");
 
-    fn start(&self, _app: &App, _env: &Environment) -> Result<Option<StartPhase>> {
-        let start_cmd = "java $JAVA_OPTS -jar /app/target/*standalone.jar";
-
-        Ok(Some(StartPhase::new(start_cmd.to_string())))
+        let plan = BuildPlan::new(vec![setup, build], Some(start));
+        Ok(Some(plan))
     }
 }
 
@@ -78,12 +68,12 @@ impl ClojureProvider {
         }
     }
 
-    fn parse_custom_version(custom_version: String) -> Result<String> {
+    fn parse_custom_version(custom_version: &str) -> Result<String> {
         // Regex for reading JDK versions (e.g. 8 or 11 or latest)
-        let jdk_regex = Regex::new(r"(^[0-9][0-9]?$)|(^latest$)")?;
+        let jdk_regex = Regex::new(r"^([0-9][0-9]?|latest)$")?;
 
         // Capture matches
-        let matches = jdk_regex.captures(custom_version.as_str().trim());
+        let matches = jdk_regex.captures(custom_version.trim());
 
         // If no matches, just use default
         if matches.is_none() {
@@ -91,11 +81,7 @@ impl ClojureProvider {
         }
 
         let matches = matches.unwrap();
-        let matched_value = if matches.get(0).is_some() {
-            matches.get(0)
-        } else {
-            matches.get(1)
-        };
+        let matched_value = matches.get(0);
 
         let value = match matched_value {
             Some(m) => m.as_str(),
@@ -107,7 +93,7 @@ impl ClojureProvider {
 
     pub fn get_nix_jdk_package(app: &App, env: &Environment) -> Result<Pkg> {
         let custom_version = ClojureProvider::get_custom_version(app, env)?;
-        let parsed_version = ClojureProvider::parse_custom_version(custom_version)?;
+        let parsed_version = ClojureProvider::parse_custom_version(&custom_version)?;
 
         let pkg_name = match parsed_version.as_str() {
             "latest" => "jdk",

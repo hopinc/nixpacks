@@ -3,40 +3,53 @@ source: tests/generate_plan_tests.rs
 expression: plan
 ---
 {
-  "version": "0.2.9",
-  "setup": {
-    "pkgs": [
-      {
-        "name": "nodejs"
-      },
-      {
-        "name": "npm-8_x",
-        "overlay": "https://github.com/railwayapp/nix-npm-overlay/archive/main.tar.gz"
-      }
-    ],
-    "libraries": [],
-    "apt_pkgs": [],
-    "baseImage": "ghcr.io/railwayapp/nixpacks:debian-1657820962"
-  },
-  "install": {
-    "cmds": [
-      "npm i"
-    ],
-    "cacheDirectories": [
-      "/root/.npm"
-    ]
-  },
-  "build": {
-    "cacheDirectories": [
-      "node_modules/.cache"
-    ]
-  },
-  "start": {
-    "cmd": "node src/index.js"
-  },
+  "nixpacksVersion": "[version]",
+  "buildImage": "[build_image]",
   "variables": {
+    "CI": "true",
+    "NIXPACKS_METADATA": "node",
     "NODE_ENV": "production",
     "NPM_CONFIG_PRODUCTION": "false"
   },
-  "static_assets": {}
+  "phases": [
+    {
+      "name": "install",
+      "dependsOn": [
+        "setup"
+      ],
+      "commands": [
+        "npm i"
+      ],
+      "cacheDirectories": [
+        "/root/.npm"
+      ],
+      "paths": [
+        "/app/node_modules/.bin"
+      ]
+    },
+    {
+      "name": "setup",
+      "nixPackages": [
+        {
+          "name": "nodejs-16_x"
+        },
+        {
+          "name": "npm-8_x",
+          "overlay": "https://github.com/railwayapp/nix-npm-overlay/archive/main.tar.gz"
+        }
+      ]
+    },
+    {
+      "name": "build",
+      "dependsOn": [
+        "install"
+      ],
+      "cacheDirectories": [
+        "node_modules/.cache"
+      ]
+    }
+  ],
+  "startPhase": {
+    "cmd": "node src/index.js"
+  }
 }

@@ -3,7 +3,10 @@ use crate::nixpacks::{
     app::App,
     environment::Environment,
     nix::pkg::Pkg,
-    phase::{BuildPhase, SetupPhase, StartPhase},
+    plan::{
+        phase::{Phase, StartPhase},
+        BuildPlan,
+    },
 };
 use anyhow::Result;
 pub struct JavaProvider {}
@@ -24,23 +27,18 @@ impl Provider for JavaProvider {
             || app.includes_file("pom.yml"))
     }
 
-    fn setup(&self, _app: &App, _env: &Environment) -> Result<Option<SetupPhase>> {
-        Ok(Some(SetupPhase::new(vec![
-            Pkg::new("maven"),
-            Pkg::new("jdk8"),
-        ])))
-    }
+    fn get_build_plan(&self, app: &App, _env: &Environment) -> Result<Option<BuildPlan>> {
+        let setup = Phase::setup(Some(vec![Pkg::new("maven"), Pkg::new("jdk")]));
 
-    fn build(&self, app: &App, _env: &Environment) -> Result<Option<BuildPhase>> {
         let mvn_exe = self.get_maven_exe(app);
-        Ok(Some(BuildPhase::new(format!("{mvn_exe} -DoutputFile=target/mvn-dependency-list.log -B -DskipTests clean dependency:list install", 
+        let build = Phase::build(Some(format!("{mvn_exe} -DoutputFile=target/mvn-dependency-list.log -B -DskipTests clean dependency:list install", 
             mvn_exe=mvn_exe
-        ))))
-    }
+        )));
 
-    fn start(&self, app: &App, _env: &Environment) -> Result<Option<StartPhase>> {
-        let start_cmd = self.get_start_cmd(app)?;
-        Ok(Some(StartPhase::new(start_cmd)))
+        let start = StartPhase::new(self.get_start_cmd(app));
+
+        let plan = BuildPlan::new(vec![setup, build], Some(start));
+        Ok(Some(plan))
     }
 }
 
@@ -54,14 +52,14 @@ impl JavaProvider {
         }
     }
 
-    fn get_start_cmd(&self, app: &App) -> Result<String> {
+    fn get_start_cmd(&self, app: &App) -> String {
         if app.includes_file("pom.xml") {
-            Ok(format!(
+            format!(
                 "java {} $JAVA_OPTS -jar target/*jar",
                 self.get_port_config(app)
-            ))
+            )
         } else {
-            Ok("java $JAVA_OPTS -jar target/*jar".to_string())
+            "java $JAVA_OPTS -jar target/*jar".to_string()
         }
     }
     fn get_port_config(&self, app: &App) -> String {

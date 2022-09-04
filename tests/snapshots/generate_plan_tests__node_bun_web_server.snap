@@ -1,0 +1,52 @@
+---
+source: tests/generate_plan_tests.rs
+expression: plan
+---
+{
+  "nixpacksVersion": "[version]",
+  "buildImage": "[build_image]",
+  "variables": {
+    "CI": "true",
+    "NIXPACKS_METADATA": "node",
+    "NODE_ENV": "production",
+    "NPM_CONFIG_PRODUCTION": "false"
+  },
+  "phases": [
+    {
+      "name": "install",
+      "dependsOn": [
+        "setup"
+      ],
+      "commands": [
+        "bun i --no-save"
+      ],
+      "cacheDirectories": [
+        "/root/.bun"
+      ],
+      "paths": [
+        "/app/node_modules/.bin"
+      ]
+    },
+    {
+      "name": "setup",
+      "nixPackages": [
+        {
+          "name": "bun",
+          "overlay": "https://github.com/railwayapp/nix-npm-overlay/archive/main.tar.gz"
+        }
+      ]
+    },
+    {
+      "name": "build",
+      "dependsOn": [
+        "install"
+      ],
+      "cacheDirectories": [
+        "node_modules/.cache"
+      ]
+    }
+  ],
+  "startPhase": {
+    "cmd": "bun index.ts"
+  }
+}

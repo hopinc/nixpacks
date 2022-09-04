@@ -3,14 +3,18 @@ use crate::nixpacks::{
     app::App,
     environment::Environment,
     nix::pkg::Pkg,
-    phase::{BuildPhase, InstallPhase, SetupPhase, StartPhase},
+    plan::{
+        phase::{Phase, StartPhase},
+        BuildPlan,
+    },
 };
 use anyhow::{bail, Result};
+use path_slash::PathExt;
 
-static DEFAULT_SWIFT_VERSION: &str = "5.4.2";
+const DEFAULT_SWIFT_VERSION: &str = "5.4.2";
 
 // From: https://lazamar.co.uk/nix-versions/?channel=nixpkgs-unstable&package=swift
-static AVAILABLE_SWIFT_VERSIONS: &[(&str, &str)] = &[
+const AVAILABLE_SWIFT_VERSIONS: &[(&str, &str)] = &[
     ("3.1", "aeaa79dc82980869a88a5955ea3cd3e1944b7d80"),
     ("3.1.1", "8414d8386b9a6b855b291fb3f01a4e3b04c08bbb"),
     ("4.0.3", "2c9d2d65266c2c3aca1e4c80215de8bee5295b04"),
@@ -36,23 +40,25 @@ impl Provider for SwiftProvider {
         Ok(app.includes_file("Package.swift"))
     }
 
-    fn setup(&self, app: &App, _env: &Environment) -> Result<Option<SetupPhase>> {
-        let mut setup_phase = SetupPhase::new(vec![
+    fn get_build_plan(&self, app: &App, _env: &Environment) -> Result<Option<BuildPlan>> {
+        let _plan = BuildPlan::default();
+
+        let mut setup = Phase::setup(Some(vec![
             Pkg::new("coreutils"),
             Pkg::new("swift"),
             Pkg::new("clang"),
             Pkg::new("zlib"),
             Pkg::new("zlib.dev"),
-        ]);
+        ]));
 
         let swift_version = SwiftProvider::get_swift_version(app)?;
         let rev = SwiftProvider::version_number_to_rev(&swift_version);
 
         if let Some(rev) = rev {
-            setup_phase.set_archive(rev);
+            setup.set_nix_archive(rev);
         } else {
             // Safe to unwrap, "5.4.2" exists on `AVAILABLE_SWIFT_VERSIONS`
-            setup_phase.set_archive(
+            setup.set_nix_archive(
                 AVAILABLE_SWIFT_VERSIONS
                     .iter()
                     .find(|(ver, _rev)| *ver == DEFAULT_SWIFT_VERSION)
@@ -62,35 +68,27 @@ impl Provider for SwiftProvider {
             );
         }
 
-        Ok(Some(setup_phase))
-    }
-
-    fn install(&self, app: &App, _env: &Environment) -> Result<Option<InstallPhase>> {
-        let mut install_phase = InstallPhase::new("swift package resolve".to_string());
-
-        install_phase.add_file_dependency("Package.swift".to_string());
-
+        let mut install = Phase::install(Some("swift package resolve".to_string()));
+        install.add_file_dependency("Package.swift".to_string());
         if app.includes_file("Package.resolved") {
-            install_phase.add_file_dependency("Package.resolved".to_string());
+            install.add_file_dependency("Package.resolved".to_string());
         }
 
-        Ok(Some(install_phase))
-    }
-
-    fn build(&self, app: &App, _env: &Environment) -> Result<Option<BuildPhase>> {
         let name = SwiftProvider::get_executable_name(app)?;
-        let mut build_phase =
-            BuildPhase::new("CC=clang++ swift build -c release --static-swift-stdlib".to_string());
-        build_phase.add_cmd(format!(
-            "cp ./.build/release/{name} ./{name} && rm -rf ./.build"
+        let mut build = Phase::build(Some(
+            "CC=clang++ swift build -c release --static-swift-stdlib".to_string(),
         ));
-        Ok(Some(build_phase))
-    }
+        build.add_cmd(format!(
+            "cp ./.build/release/{name} ./{name} && rm -rf ./.build",
+            name = name
+        ));
 
-    fn start(&self, app: &App, _env: &Environment) -> Result<Option<StartPhase>> {
         let name = SwiftProvider::get_executable_name(app)?;
+        let start = StartPhase::new(format!("./{}", name));
 
-        Ok(Some(StartPhase::new(format!("./{}", name))))
+        let plan = BuildPlan::new(vec![setup, install, build], Some(start));
+
+        Ok(Some(plan))
     }
 }
 
@@ -117,7 +115,7 @@ impl SwiftProvider {
                 })
                 .collect::<Vec<_>>()
                 .first()
-                .map(|s| s.to_owned());
+                .cloned();
 
             if let Some(version) = version {
                 Ok(version)
@@ -133,11 +131,11 @@ impl SwiftProvider {
         let raw_paths = app.find_files("Sources/**/main.swift")?;
         let paths = raw_paths
             .iter()
-            .filter(|&path| !path.to_string_lossy().contains(".build"))
+            .filter(|&path| !path.to_slash().unwrap().contains(".build"))
             .collect::<Vec<_>>();
 
         let path = match paths.first() {
-            Some(path) => path.to_string_lossy().to_string(),
+            Some(path) => path.to_slash().unwrap().to_string(),
             None => bail!("Your swift app doesn't have a main.swift file"),
         };
 
@@ -156,7 +154,7 @@ impl SwiftProvider {
             .iter()
             .find(|(ver, _rev)| *ver == version);
 
-        matched_version.map(|(_ver, rev)| rev.to_string())
+        matched_version.map(|(_ver, rev)| (*rev).to_string())
     }
 }
 

@@ -1,21 +1,21 @@
-use super::plan::BuildPlan;
 use indoc::formatdoc;
+
+use super::plan::phase::Phase;
 
 pub mod pkg;
 
-pub fn create_nix_expression(plan: &BuildPlan) -> String {
-    let setup_phase = plan.setup.clone().unwrap_or_default();
+pub fn create_nix_expression(phase: &Phase) -> String {
+    let pkgs = phase.nix_pkgs.clone().unwrap_or_default();
 
-    let nixpkgs = setup_phase
-        .pkgs
+    let nixpkgs = pkgs
         .iter()
-        .map(|p| p.to_nix_string())
+        .map(pkg::Pkg::to_nix_string)
         .collect::<Vec<String>>()
         .join(" ");
 
-    let libraries = setup_phase.libraries.unwrap_or_default().join(" ");
+    let libraries = phase.nix_libraries.clone().unwrap_or_default().join(" ");
 
-    let nix_archive = setup_phase.archive.clone();
+    let nix_archive = phase.nixpacks_archive.clone();
     let pkg_import = match nix_archive {
         Some(archive) => format!(
             "import (fetchTarball \"https://github.com/NixOS/nixpkgs/archive/{}.tar.gz\")",
@@ -25,7 +25,7 @@ pub fn create_nix_expression(plan: &BuildPlan) -> String {
     };
 
     let mut overlays: Vec<String> = Vec::new();
-    for pkg in &setup_phase.pkgs {
+    for pkg in &pkgs {
         if let Some(overlay) = &pkg.overlay {
             overlays.push(overlay.to_string());
         }
@@ -41,36 +41,44 @@ pub fn create_nix_expression(plan: &BuildPlan) -> String {
     // In the future, we will probably want a generic way for providers to set variables based off Nix package locations
     let openssl_dirs = if libraries.contains("openssl") {
         formatdoc! {"
-      export OPENSSL_DIR=\"${{openssl.dev}}\"
-      export OPENSSL_LIB_DIR=\"${{openssl.out}}/lib\"
-    "}
+          export OPENSSL_DIR=\"${{openssl.dev}}\"
+          export OPENSSL_LIB_DIR=\"${{openssl.out}}/lib\"
+        "}
     } else {
         String::new()
     };
 
+    let name = format!("{}-env", phase.name);
     let nix_expression = formatdoc! {"
             {{ }}:
 
-            let pkgs = {pkg_import} {{ overlays = [ {overlays_string} ]; }};
+            let pkgs = {} {{ overlays = [ {} ]; }};
             in with pkgs;
               let
-                APPEND_LIBRARY_PATH = \"${{lib.makeLibraryPath [ {libraries} ] }}\";
+                APPEND_LIBRARY_PATH = \"${{lib.makeLibraryPath [ {} ] }}\";
                 myLibraries = writeText \"libraries\" ''
                   export LD_LIBRARY_PATH=\"${{APPEND_LIBRARY_PATH}}:$LD_LIBRARY_PATH\"
-                  {openssl_dirs}
+                  {}
                 '';
               in
                 buildEnv {{
-                  name = \"env\";
+                  name = \"{name}\";
                   paths = [
-                    (runCommand \"libraries\" {{ }} ''
+                    (runCommand \"{name}\" {{ }} ''
                       mkdir -p $out/etc/profile.d
-                      cp ${{myLibraries}} $out/etc/profile.d/libraries.sh
+                      cp ${{myLibraries}} $out/etc/profile.d/{name}.sh
                     '')
-                    {nixpkgs}
+                    {}
                   ];
                 }}
-        "};
+        ",
+        pkg_import,
+        overlays_string,
+        libraries,
+        openssl_dirs,
+        nixpkgs,
+        name=name,
+    };
 
     nix_expression
 }

@@ -3,33 +3,43 @@ source: tests/generate_plan_tests.rs
 expression: plan
 ---
 {
-  "version": "0.2.9",
-  "setup": {
-    "pkgs": [
-      {
-        "name": "crystal"
-      },
-      {
-        "name": "shards"
-      }
-    ],
-    "libraries": [],
-    "apt_pkgs": [],
-    "baseImage": "ghcr.io/railwayapp/nixpacks:debian-1657820962"
+  "nixpacksVersion": "[version]",
+  "buildImage": "[build_image]",
+  "variables": {
+    "NIXPACKS_METADATA": "crystal"
   },
-  "install": {
-    "cmds": [
-      "shards install"
-    ]
-  },
-  "build": {
-    "cmds": [
-      "shards build --release"
-    ]
-  },
-  "start": {
+  "phases": [
+    {
+      "name": "install",
+      "dependsOn": [
+        "setup"
+      ],
+      "commands": [
+        "shards install"
+      ]
+    },
+    {
+      "name": "setup",
+      "nixPackages": [
+        {
+          "name": "crystal"
+        },
+        {
+          "name": "shards"
+        }
+      ]
+    },
+    {
+      "name": "build",
+      "dependsOn": [
+        "install"
+      ],
+      "commands": [
+        "shards build"
+      ]
+    }
+  ],
+  "startPhase": {
     "cmd": "./bin/crystal"
-  },
-  "variables": {},
-  "static_assets": {}
+  }
 }

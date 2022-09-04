@@ -1,4 +1,4 @@
-use anyhow::anyhow;
+use path_slash::PathBufExt;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::{env, fs, path::PathBuf};
@@ -7,10 +7,11 @@ use anyhow::{bail, Context, Result};
 use globset::Glob;
 use regex::Regex;
 use serde::de::DeserializeOwned;
-use walkdir::WalkDir;
+use walkdir::{DirEntry, WalkDir};
 
-pub static ASSETS_DIR: &str = "/assets/";
 pub type StaticAssets = BTreeMap<String, String>;
+
+pub const ASSETS_DIR: &str = "/assets/";
 
 #[derive(Debug, Clone)]
 pub struct App {
@@ -33,6 +34,7 @@ impl App {
     }
 
     /// Check if a file exists
+
     pub fn includes_file(&self, name: &str) -> bool {
         self.source.join(name).is_file()
     }
@@ -79,8 +81,8 @@ impl App {
         let relative_paths = walker
             .sort_by_file_name()
             .into_iter()
-            .filter_map(|result| result.ok()) // remove bad ones
-            .map(|dir| dir.into_path()) // convert to paths
+            .filter_map(Result::ok) // remove bad ones
+            .map(DirEntry::into_path) // convert to paths
             .filter(|path| glob.is_match(path)) // find matches
             .collect();
 
@@ -88,6 +90,7 @@ impl App {
     }
 
     /// Check if a path matching a glob exists
+
     pub fn has_match(&self, pattern: &str) -> bool {
         match self.find_files(pattern) {
             Ok(v) => !v.is_empty(),
@@ -100,7 +103,11 @@ impl App {
     /// # Errors
     /// This will error if the path doesn't exist, or if the contents isn't UTF-8
     pub fn read_file(&self, name: &str) -> Result<String> {
-        fs::read_to_string(self.source.join(name)).map_err(|e| anyhow!(e))
+        let data = fs::read_to_string(PathBuf::from_slash_lossy(
+            self.source.join(name).as_os_str(),
+        ))?;
+
+        Ok(data.replace("\r\n", "\n"))
     }
 
     pub fn find_match(&self, re: &Regex, pattern: &str) -> Result<bool> {
@@ -124,6 +131,7 @@ impl App {
     }
 
     /// Check if a directory exists
+
     pub fn includes_directory(&self, name: &str) -> bool {
         self.source.join(name).is_dir()
     }
@@ -179,8 +187,9 @@ impl App {
     }
 
     /// Get the path in the container to an asset defined in `static_assets`.
+
     pub fn asset_path(&self, name: &str) -> String {
-        format!("{ASSETS_DIR}{name}")
+        format!("{}{}", ASSETS_DIR, name)
     }
 }
 

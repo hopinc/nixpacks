@@ -2,6 +2,7 @@ use std::{
     collections::hash_map::DefaultHasher,
     env,
     hash::{Hash, Hasher},
+    string::ToString,
 };
 
 use anyhow::Result;
@@ -9,7 +10,7 @@ use clap::{arg, Arg, Command};
 use nixpacks::{
     create_docker_image, generate_build_plan,
     nixpacks::{
-        builder::docker::DockerBuilderOptions, nix::pkg::Pkg, plan::generator::GeneratePlanOptions,
+        builder::docker::DockerBuilderOptions, nix::pkg::Pkg, plan::config::GeneratePlanConfig,
     },
 };
 
@@ -81,17 +82,16 @@ fn main() -> Result<()> {
                         .takes_value(true),
                 )
                 .arg(
+                    Arg::new("current-dir")
+                        .long("current-dir")
+                        .help("Output Nixpacks related files to the current directory ")
+                        .takes_value(false),
+                )
+                .arg(
                     Arg::new("no-cache")
                         .long("no-cache")
                         .help("Disable building with the cache"),
                 ),
-        )
-        .arg(
-            Arg::new("plan")
-                .long("plan")
-                .help("Existing build plan file to use")
-                .takes_value(true)
-                .global(true),
         )
         .arg(
             Arg::new("install_cmd")
@@ -161,7 +161,7 @@ fn main() -> Result<()> {
 
     let install_cmd = matches.value_of("install_cmd").map(|s| vec![s.to_string()]);
     let build_cmd = matches.value_of("build_cmd").map(|s| vec![s.to_string()]);
-    let start_cmd = matches.value_of("start_cmd").map(|s| s.to_string());
+    let start_cmd = matches.value_of("start_cmd").map(ToString::to_string);
     let pkgs = match matches.values_of("pkgs") {
         Some(values) => values.map(Pkg::new).collect::<Vec<_>>(),
         None => Vec::new(),
@@ -182,9 +182,7 @@ fn main() -> Result<()> {
         None => Vec::new(),
     };
 
-    let plan_path = matches.value_of("plan").map(|n| n.to_string());
-
-    let plan_options = &GeneratePlanOptions {
+    let plan_options = &GeneratePlanConfig {
         custom_install_cmd: install_cmd,
         custom_start_cmd: start_cmd,
         custom_build_cmd: build_cmd,
@@ -192,7 +190,7 @@ fn main() -> Result<()> {
         custom_libs: libs,
         custom_apt_pkgs: apt_pkgs,
         pin_pkgs,
-        plan_path,
+        ..Default::default()
     };
 
     match &matches.subcommand() {
@@ -205,9 +203,10 @@ fn main() -> Result<()> {
         }
         Some(("build", matches)) => {
             let path = matches.value_of("PATH").expect("required");
-            let name = matches.value_of("name").map(|n| n.to_string());
-            let out_dir = matches.value_of("out").map(|n| n.to_string());
-            let mut cache_key = matches.value_of("cache-key").map(|n| n.to_string());
+            let name = matches.value_of("name").map(ToString::to_string);
+            let out_dir = matches.value_of("out").map(ToString::to_string);
+            let current_dir = matches.is_present("current-dir");
+            let mut cache_key = matches.value_of("cache-key").map(ToString::to_string);
             let no_cache = matches.is_present("no-cache");
 
             // Default to absolute `path` of the source that is being built as the cache-key if not disabled
@@ -219,16 +218,16 @@ fn main() -> Result<()> {
 
             let tags = matches
                 .values_of("tag")
-                .map(|values| values.map(|s| s.to_string()).collect::<Vec<_>>())
+                .map(|values| values.map(ToString::to_string).collect::<Vec<_>>())
                 .unwrap_or_default();
 
             let labels = matches
                 .values_of("label")
-                .map(|values| values.map(|s| s.to_string()).collect::<Vec<_>>())
+                .map(|values| values.map(ToString::to_string).collect::<Vec<_>>())
                 .unwrap_or_default();
             let platform = matches
                 .values_of("platform")
-                .map(|values| values.map(|s| s.to_string()).collect::<Vec<_>>())
+                .map(|values| values.map(ToString::to_string).collect::<Vec<_>>())
                 .unwrap_or_default();
 
             let build_options = &DockerBuilderOptions {
@@ -241,6 +240,7 @@ fn main() -> Result<()> {
                 no_cache,
                 platform,
                 print_dockerfile,
+                current_dir,
             };
 
             create_docker_image(path, envs, plan_options, build_options)?;

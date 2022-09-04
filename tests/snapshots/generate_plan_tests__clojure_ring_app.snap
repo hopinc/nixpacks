@@ -3,36 +3,40 @@ source: tests/generate_plan_tests.rs
 expression: plan
 ---
 {
-  "version": "0.2.9",
-  "setup": {
-    "pkgs": [
-      {
-        "name": "leiningen"
-      },
-      {
-        "name": "jdk8"
-      }
-    ],
-    "libraries": [],
-    "apt_pkgs": [],
-    "baseImage": "ghcr.io/railwayapp/nixpacks:debian-1657820962"
+  "nixpacksVersion": "[version]",
+  "buildImage": "[build_image]",
+  "variables": {
+    "NIXPACKS_METADATA": "clojure"
   },
-  "install": {
-    "cmds": [
-      ""
-    ],
-    "cacheDirectories": [
-      "~/.m2"
-    ]
-  },
-  "build": {
-    "cmds": [
-      "lein ring uberjar; if [ -f /app/target/uberjar/*standalone.jar ]; then  mv /app/target/uberjar/*standalone.jar /app/target/*standalone.jar; fi"
-    ]
-  },
-  "start": {
-    "cmd": "java $JAVA_OPTS -jar /app/target/*standalone.jar"
-  },
-  "variables": {},
-  "static_assets": {}
+  "phases": [
+    {
+      "name": "install",
+      "dependsOn": [
+        "setup"
+      ]
+    },
+    {
+      "name": "setup",
+      "nixPackages": [
+        {
+          "name": "leiningen"
+        },
+        {
+          "name": "jdk8"
+        }
+      ]
+    },
+    {
+      "name": "build",
+      "dependsOn": [
+        "install"
+      ],
+      "commands": [
+        "lein ring uberjar; if [ -f /app/target/uberjar/*standalone.jar ]; then  mv /app/target/uberjar/*standalone.jar /app/target/*standalone.jar; fi"
+      ]
+    }
+  ],
+  "startPhase": {
+    "cmd": "bash -c \"java $JAVA_OPTS -jar /app/target/*standalone.jar\""
+  }
 }

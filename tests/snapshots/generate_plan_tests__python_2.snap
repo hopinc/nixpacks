@@ -1,0 +1,43 @@
+---
+source: tests/generate_plan_tests.rs
+expression: plan
+---
+{
+  "nixpacksVersion": "[version]",
+  "buildImage": "[build_image]",
+  "variables": {
+    "NIXPACKS_METADATA": "python"
+  },
+  "phases": [
+    {
+      "name": "setup",
+      "nixPackages": [
+        {
+          "name": "python27"
+        },
+        {
+          "name": "gcc"
+        }
+      ],
+      "nixLibraries": [
+        "zlib",
+        "stdenv.cc.cc.lib"
+      ]
+    },
+    {
+      "name": "install",
+      "dependsOn": [
+        "setup"
+      ]
+    },
+    {
+      "name": "build",
+      "dependsOn": [
+        "install"
+      ]
+    }
+  ],
+  "startPhase": {
+    "cmd": "python main.py"
+  }
+}

@@ -3,33 +3,43 @@ source: tests/generate_plan_tests.rs
 expression: plan
 ---
 {
-  "version": "0.2.9",
-  "setup": {
-    "pkgs": [
-      {
-        "name": "dart"
-      }
-    ],
-    "libraries": [],
-    "apt_pkgs": [],
-    "baseImage": "ghcr.io/railwayapp/nixpacks:debian-1657820962"
+  "nixpacksVersion": "[version]",
+  "buildImage": "[build_image]",
+  "variables": {
+    "NIXPACKS_METADATA": "dart"
   },
-  "install": {
-    "cmds": [
-      "dart pub get"
-    ],
-    "onlyIncludeFiles": [
-      "pubspec.yaml"
-    ]
-  },
-  "build": {
-    "cmds": [
-      "dart compile exe bin/console_simple.dart"
-    ]
-  },
-  "start": {
+  "phases": [
+    {
+      "name": "install",
+      "dependsOn": [
+        "setup"
+      ],
+      "commands": [
+        "dart pub get"
+      ],
+      "onlyIncludeFiles": [
+        "pubspec.yaml"
+      ]
+    },
+    {
+      "name": "setup",
+      "nixPackages": [
+        {
+          "name": "dart"
+        }
+      ]
+    },
+    {
+      "name": "build",
+      "dependsOn": [
+        "install"
+      ],
+      "commands": [
+        "dart compile exe bin/console_simple.dart"
+      ]
+    }
+  ],
+  "startPhase": {
     "cmd": "./bin/console_simple.exe"
-  },
-  "variables": {},
-  "static_assets": {}
+  }
 }

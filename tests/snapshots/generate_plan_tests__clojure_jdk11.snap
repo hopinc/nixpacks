@@ -1,0 +1,42 @@
+---
+source: tests/generate_plan_tests.rs
+expression: plan
+---
+{
+  "nixpacksVersion": "[version]",
+  "buildImage": "[build_image]",
+  "variables": {
+    "NIXPACKS_METADATA": "clojure"
+  },
+  "phases": [
+    {
+      "name": "install",
+      "dependsOn": [
+        "setup"
+      ]
+    },
+    {
+      "name": "setup",
+      "nixPackages": [
+        {
+          "name": "leiningen"
+        },
+        {
+          "name": "jdk11"
+        }
+      ]
+    },
+    {
+      "name": "build",
+      "dependsOn": [
+        "install"
+      ],
+      "commands": [
+        "lein uberjar; if [ -f /app/target/uberjar/*standalone.jar ]; then  mv /app/target/uberjar/*standalone.jar /app/target/*standalone.jar; fi"
+      ]
+    }
+  ],
+  "startPhase": {
+    "cmd": "bash -c \"java $JAVA_OPTS -jar /app/target/*standalone.jar\""
+  }
+}

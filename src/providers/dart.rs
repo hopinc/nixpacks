@@ -3,12 +3,15 @@ use crate::nixpacks::{
     app::App,
     environment::Environment,
     nix::pkg::Pkg,
-    phase::{BuildPhase, InstallPhase, SetupPhase, StartPhase},
+    plan::{
+        phase::{Phase, StartPhase},
+        BuildPlan,
+    },
 };
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-pub const DEFAULT_DART_PKG_NAME: &'static &str = &"dart";
+pub const DEFAULT_DART_PKG_NAME: &str = "dart";
 
 #[derive(Deserialize, Debug)]
 pub struct DartPubspec {
@@ -27,29 +30,20 @@ impl Provider for DartProvider {
         Ok(app.includes_file("pubspec.yaml"))
     }
 
-    fn setup(&self, _app: &App, _env: &Environment) -> Result<Option<SetupPhase>> {
-        Ok(Some(SetupPhase::new(vec![Pkg::new(DEFAULT_DART_PKG_NAME)])))
-    }
+    fn get_build_plan(&self, app: &App, _env: &Environment) -> Result<Option<BuildPlan>> {
+        let setup = Phase::setup(Some(vec![Pkg::new(DEFAULT_DART_PKG_NAME)]));
 
-    fn install(&self, _app: &App, _env: &Environment) -> Result<Option<InstallPhase>> {
-        let mut install_cmd = InstallPhase::new("dart pub get".to_string());
-        install_cmd.add_file_dependency("pubspec.yaml".to_string());
+        let mut install = Phase::install(Some("dart pub get".to_string()));
+        install.add_file_dependency("pubspec.yaml".to_string());
 
-        Ok(Some(install_cmd))
-    }
-
-    fn build(&self, app: &App, _env: &Environment) -> Result<Option<BuildPhase>> {
         let pubspec = DartProvider::get_pubspec(app)?;
-        let command = format!("dart compile exe bin/{}.dart", pubspec.name);
+        let build = Phase::build(Some(format!("dart compile exe bin/{}.dart", pubspec.name)));
 
-        Ok(Some(BuildPhase::new(command)))
-    }
+        let pubspec = DartProvider::get_pubspec(app)?;
+        let start = StartPhase::new(format!("./bin/{}.exe", pubspec.name));
 
-    fn start(&self, _app: &App, _env: &Environment) -> Result<Option<StartPhase>> {
-        let pubspec = DartProvider::get_pubspec(_app)?;
-        let command = format!("./bin/{}.exe", pubspec.name);
-
-        Ok(Some(StartPhase::new(command)))
+        let plan = BuildPlan::new(vec![setup, install, build], Some(start));
+        Ok(Some(plan))
     }
 }
 

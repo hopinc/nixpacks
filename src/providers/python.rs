@@ -1,27 +1,26 @@
-use std::{collections::HashMap, fs};
-
-use anyhow::{bail, Context, Ok, Result};
-
-use std::result::Result::Ok as OkResult;
-
-use regex::{Match, Regex};
-use serde::Deserialize;
-
 use crate::{
     chain,
     nixpacks::{
         app::App,
         environment::{Environment, EnvironmentVariables},
-        phase::{InstallPhase, SetupPhase, StartPhase},
+        plan::{
+            phase::{Phase, StartPhase},
+            BuildPlan,
+        },
     },
     Pkg,
 };
+use anyhow::{bail, Context, Ok, Result};
+use regex::{Match, Regex};
+use serde::Deserialize;
+use std::result::Result::Ok as OkResult;
+use std::{collections::HashMap, fs};
 
-use super::Provider;
+use super::{Provider, ProviderMetadata};
 
-const DEFAULT_PYTHON_PKG_NAME: &'static &str = &"python38";
-const POETRY_VERSION: &'static &str = &"1.1.13";
-const PIP_CACHE_DIR: &'static &str = &"/root/.cache/pip";
+const DEFAULT_PYTHON_PKG_NAME: &str = "python38";
+const POETRY_VERSION: &str = "1.1.13";
+const PIP_CACHE_DIR: &str = "/root/.cache/pip";
 
 pub struct PythonProvider {}
 
@@ -31,12 +30,78 @@ impl Provider for PythonProvider {
     }
 
     fn detect(&self, app: &App, _env: &Environment) -> Result<bool> {
-        Ok(app.includes_file("main.py")
+        let has_python = app.includes_file("main.py")
             || app.includes_file("requirements.txt")
-            || app.includes_file("pyproject.toml"))
+            || app.includes_file("pyproject.toml");
+        Ok(has_python)
     }
 
-    fn setup(&self, app: &App, env: &Environment) -> Result<Option<SetupPhase>> {
+    fn metadata(&self, app: &App, env: &Environment) -> Result<ProviderMetadata> {
+        let is_django = PythonProvider::is_django(app, env)?;
+        let is_using_postgres = PythonProvider::is_using_postgres(app, env)?;
+        let is_poetry = app.includes_file("poetry.lock");
+
+        Ok(ProviderMetadata::from(vec![
+            (is_django, "django"),
+            (is_using_postgres, "postgres"),
+            (is_poetry, "poetry"),
+        ]))
+    }
+
+    fn get_build_plan(&self, app: &App, env: &Environment) -> Result<Option<BuildPlan>> {
+        let mut plan = BuildPlan::default();
+
+        if let Some(setup) = self.setup(app, env)? {
+            plan.add_phase(setup);
+        }
+        if let Some(install) = self.install(app, env)? {
+            plan.add_phase(install);
+        }
+        if let Some(start) = self.start(app, env)? {
+            plan.set_start_phase(start);
+        }
+
+        if app.includes_file("poetry.lock") {
+            plan.add_variables(EnvironmentVariables::from([(
+                "NIXPACKS_POETRY_VERSION".to_string(),
+                POETRY_VERSION.to_string(),
+            )]));
+        }
+
+        Ok(Some(plan))
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[allow(dead_code)]
+struct PyProject {
+    pub project: Option<ProjectDecl>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[allow(dead_code)]
+struct ProjectDecl {
+    pub name: Option<String>,
+    pub packages: Option<Vec<String>>,
+    pub py_modules: Option<Vec<String>>,
+    pub entry_points: Option<HashMap<String, String>>,
+}
+
+#[allow(dead_code)]
+struct ProjectMeta {
+    pub project_name: Option<String>,
+    pub module_name: Option<String>,
+    pub entry_point: Option<EntryPoint>,
+}
+
+#[allow(dead_code)]
+enum EntryPoint {
+    Command(String),
+    Module(String),
+}
+
+impl PythonProvider {
+    fn setup(&self, app: &App, env: &Environment) -> Result<Option<Phase>> {
         let mut pkgs: Vec<Pkg> = vec![];
         let python_base_package = PythonProvider::get_nix_python_package(app, env)?;
 
@@ -44,57 +109,52 @@ impl Provider for PythonProvider {
 
         if PythonProvider::is_django(app, env)? && PythonProvider::is_using_postgres(app, env)? {
             // Django with Postgres requires postgresql and gcc on top of the original python packages
-            pkgs.append(&mut vec![Pkg::new("postgresql"), Pkg::new("gcc")]);
+            pkgs.append(&mut vec![Pkg::new("postgresql")]);
         }
 
-        let mut setup_phase = SetupPhase::new(pkgs);
+        let mut setup_phase = Phase::setup(Some(pkgs));
 
-        // Numpy needs some C headers to be available
+        // Many Python packages need some C headers to be available
         // stdenv.cc.cc.lib -> https://discourse.nixos.org/t/nixos-with-poetry-installed-pandas-libstdc-so-6-cannot-open-shared-object-file/8442/3
-        if PythonProvider::uses_numpy(app)? {
-            setup_phase.add_libraries(vec!["zlib".to_string(), "stdenv.cc.cc.lib".to_string()]);
-        }
+        setup_phase.add_pkgs_libs(vec!["zlib".to_string(), "stdenv.cc.cc.lib".to_string()]);
+        setup_phase.add_nix_pkgs(vec![Pkg::new("gcc")]);
 
         Ok(Some(setup_phase))
     }
 
-    fn install(&self, app: &App, _env: &Environment) -> Result<Option<InstallPhase>> {
+    fn install(&self, app: &App, _env: &Environment) -> Result<Option<Phase>> {
         let env_loc = "/opt/venv";
         let create_env = format!("python -m venv {}", env_loc);
         let activate_env = format!(". {}/bin/activate", env_loc);
 
         if app.includes_file("requirements.txt") {
-            let mut install_phase = InstallPhase::new(format!(
+            let mut install_phase = Phase::install(Some(format!(
                 "{} && {} && pip install -r requirements.txt",
                 create_env, activate_env
-            ));
+            )));
 
-            install_phase.add_file_dependency("requirements.txt".to_string());
             install_phase.add_path(format!("{}/bin", env_loc));
-
             install_phase.add_cache_directory(PIP_CACHE_DIR.to_string());
 
             return Ok(Some(install_phase));
         } else if app.includes_file("pyproject.toml") {
             if app.includes_file("poetry.lock") {
                 let install_poetry = "pip install poetry==$NIXPACKS_POETRY_VERSION".to_string();
-                let mut install_phase = InstallPhase::new(format!(
+                let mut install_phase = Phase::install(Some(format!(
                     "{} && {} && {} && poetry install --no-dev --no-interaction --no-ansi",
                     create_env, activate_env, install_poetry
-                ));
+                )));
 
-                install_phase.add_file_dependency("poetry.lock".to_string());
-                install_phase.add_file_dependency("pyproject.toml".to_string());
                 install_phase.add_path(format!("{}/bin", env_loc));
 
                 install_phase.add_cache_directory(PIP_CACHE_DIR.to_string());
 
                 return Ok(Some(install_phase));
             }
-            let mut install_phase = InstallPhase::new(format!(
+            let mut install_phase = Phase::install(Some(format!(
                 "{} && {} && pip install --upgrade build setuptools && pip install .",
                 create_env, activate_env
-            ));
+            )));
 
             install_phase.add_file_dependency("pyproject.toml".to_string());
             install_phase.add_path(format!("{}/bin", env_loc));
@@ -135,71 +195,30 @@ impl Provider for PythonProvider {
         Ok(None)
     }
 
-    fn environment_variables(
-        &self,
-        app: &App,
-        _env: &Environment,
-    ) -> Result<Option<EnvironmentVariables>> {
-        if app.includes_file("poetry.lock") {
-            return Ok(Some(EnvironmentVariables::from([(
-                "NIXPACKS_POETRY_VERSION".to_string(),
-                POETRY_VERSION.to_string(),
-            )])));
-        }
-        Ok(None)
-    }
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[allow(dead_code)]
-struct PyProject {
-    pub project: Option<ProjectDecl>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[allow(dead_code)]
-struct ProjectDecl {
-    pub name: Option<String>,
-    pub packages: Option<Vec<String>>,
-    pub py_modules: Option<Vec<String>>,
-    pub entry_points: Option<HashMap<String, String>>,
-}
-
-#[allow(dead_code)]
-struct ProjectMeta {
-    pub project_name: Option<String>,
-    pub module_name: Option<String>,
-    pub entry_point: Option<EntryPoint>,
-}
-
-#[allow(dead_code)]
-enum EntryPoint {
-    Command(String),
-    Module(String),
-}
-
-impl PythonProvider {
     fn is_django(app: &App, _env: &Environment) -> Result<bool> {
-        Ok(app.includes_file("manage.py")
-            && app
-                .read_file("requirements.txt")?
+        let has_manage = app.includes_file("manage.py");
+        let imports_django = vec!["requirements.txt", "pyproject.toml"].iter().any(|f| {
+            app.read_file(f)
+                .unwrap_or_default()
                 .to_lowercase()
-                .contains("django"))
+                .contains("django")
+        });
+        Ok(has_manage && imports_django)
     }
 
     fn is_using_postgres(app: &App, _env: &Environment) -> Result<bool> {
         // Check for the engine database type in settings.py
         let re = Regex::new(r"django.db.backends.postgresql").unwrap();
 
-        app.find_match(&re, "/**/settings.py")
+        app.find_match(&re, "/**/*.py")
     }
 
     fn get_django_app_name(app: &App, _env: &Environment) -> Result<String> {
         // Look for the settings.py file
-        let paths = app.find_files("/**/settings.py").unwrap();
+        let paths = app.find_files("/**/*.py").unwrap();
 
         // Generate regex to find the application name
-        let re = Regex::new(r"WSGI_APPLICATION = '(.*).application'").unwrap();
+        let re = Regex::new(r#"WSGI_APPLICATION = ["|'](.*).application["|']"#).unwrap();
 
         // Search all settings.py matches
         for path in paths {
@@ -218,12 +237,22 @@ impl PythonProvider {
     }
 
     fn get_nix_python_package(app: &App, env: &Environment) -> Result<Pkg> {
+        // Fetch python versions into tuples with defaults
+        fn as_default(v: Option<Match>) -> &str {
+            match v {
+                Some(m) => m.as_str(),
+                None => "_",
+            }
+        }
+
         // Fetch version from configs
         let mut custom_version = env.get_config_variable("PYTHON_VERSION");
 
         // If not from configs, get it from the .python-version file
         if custom_version.is_none() && app.includes_file(".python-version") {
             custom_version = Some(app.read_file(".python-version")?);
+        } else if app.includes_file("runtime.txt") {
+            custom_version = Some(app.read_file("runtime.txt")?);
         }
 
         // If it's still none, return default
@@ -233,7 +262,8 @@ impl PythonProvider {
         let custom_version = custom_version.unwrap();
 
         // Regex for reading Python versions (e.g. 3.8.0 or 3.8 or 3)
-        let python_regex = Regex::new(r"^(\d)\.(\d+)(?:\.\d+)?$")?;
+        let python_regex =
+            Regex::new(r#"^(?:[\sa-zA-Z-"']*)(\d*)(?:\.*)(\d*)(?:\.*\d*)(?:["']?)$"#)?;
 
         // Capture matches
         let matches = python_regex.captures(custom_version.as_str().trim());
@@ -243,14 +273,6 @@ impl PythonProvider {
             return Ok(Pkg::new(DEFAULT_PYTHON_PKG_NAME));
         }
         let matches = matches.unwrap();
-
-        // Fetch python versions into tuples with defaults
-        fn as_default(v: Option<Match>) -> &str {
-            match v {
-                Some(m) => m.as_str(),
-                None => "_",
-            }
-        }
         let python_version = (as_default(matches.get(1)), as_default(matches.get(2)));
 
         // Match major and minor versions
@@ -260,9 +282,7 @@ impl PythonProvider {
             ("3", "9") => Ok(Pkg::new("python39")),
             ("3", "8") => Ok(Pkg::new("python38")),
             ("3", "7") => Ok(Pkg::new("python37")),
-            ("3", "_") => Ok(Pkg::new(DEFAULT_PYTHON_PKG_NAME)),
-            ("2", "7") => Ok(Pkg::new("python27")),
-            ("2", "_") => Ok(Pkg::new("python27")),
+            ("2", "7" | "_") => Ok(Pkg::new("python27")),
             _ => Ok(Pkg::new(DEFAULT_PYTHON_PKG_NAME)),
         }
     }
@@ -282,7 +302,7 @@ impl PythonProvider {
             .project
             .as_ref()
             .and_then(|proj| proj.name.as_ref())
-            .map(|name| name.to_owned());
+            .cloned();
 
         let module_name = chain!(project.project.clone() =>
             (
@@ -294,11 +314,11 @@ impl PythonProvider {
                 |mods| mods.get(0).cloned()
             );
             (
-                |_| project_name.to_owned()
+                |_| project_name.clone()
             )
         );
 
-        let entry_point = module_name.to_owned().map(EntryPoint::Module);
+        let entry_point = module_name.clone().map(EntryPoint::Module);
 
         ProjectMeta {
             project_name,
@@ -314,20 +334,21 @@ impl PythonProvider {
         ))
     }
 
-    fn uses_numpy(app: &App) -> Result<bool> {
-        let requirements_numpy = app.includes_file("requirements.txt")
+    #[allow(dead_code)]
+    fn uses_dep(app: &App, dep: &str) -> Result<bool> {
+        let requirements_usage = app.includes_file("requirements.txt")
             && app
                 .read_file("requirements.txt")?
                 .to_lowercase()
-                .contains("numpy");
+                .contains(dep);
 
-        let project_numpy = app.includes_file("pyproject.toml")
+        let pyproject_usage = app.includes_file("pyproject.toml")
             && app
                 .read_file("pyproject.toml")?
                 .to_lowercase()
-                .contains("numpy");
+                .contains(dep);
 
-        Ok(requirements_numpy || project_numpy)
+        Ok(requirements_usage || pyproject_usage)
     }
 }
 
@@ -364,6 +385,19 @@ mod test {
     }
 
     #[test]
+    fn test_custom_version_runtime_txt() -> Result<()> {
+        assert_eq!(
+            PythonProvider::get_nix_python_package(
+                &App::new("./examples/python-2-runtime")?,
+                &Environment::default()
+            )?,
+            Pkg::new("python27")
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn test_version_from_environment_variable() -> Result<()> {
         assert_eq!(
             PythonProvider::get_nix_python_package(
@@ -381,12 +415,14 @@ mod test {
 
     #[test]
     fn test_numpy_detection() -> Result<()> {
-        assert!(!PythonProvider::uses_numpy(&App::new(
-            "./examples/python"
-        )?)?,);
-        assert!(PythonProvider::uses_numpy(&App::new(
-            "./examples/python-numpy"
-        )?)?,);
+        assert!(!PythonProvider::uses_dep(
+            &App::new("./examples/python",)?,
+            "numpy"
+        )?,);
+        assert!(PythonProvider::uses_dep(
+            &App::new("./examples/python-numpy",)?,
+            "numpy"
+        )?,);
         Ok(())
     }
 }

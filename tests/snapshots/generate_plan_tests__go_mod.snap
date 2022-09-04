@@ -3,39 +3,48 @@ source: tests/generate_plan_tests.rs
 expression: plan
 ---
 {
-  "version": "0.2.9",
-  "setup": {
-    "pkgs": [
-      {
-        "name": "go"
-      }
-    ],
-    "libraries": [],
-    "apt_pkgs": [],
-    "baseImage": "ghcr.io/railwayapp/nixpacks:debian-1657820962"
+  "nixpacksVersion": "[version]",
+  "buildImage": "[build_image]",
+  "variables": {
+    "CGO_ENABLED": "0",
+    "NIXPACKS_METADATA": "golang"
   },
-  "install": {
-    "cmds": [
-      "go get"
-    ],
-    "cacheDirectories": [
-      "/root/.cache/go-build"
-    ]
-  },
-  "build": {
-    "cmds": [
-      "go build -o out"
-    ],
-    "cacheDirectories": [
-      "/root/.cache/go-build"
-    ]
-  },
-  "start": {
+  "phases": [
+    {
+      "name": "install",
+      "dependsOn": [
+        "setup"
+      ],
+      "commands": [
+        "go mod download"
+      ],
+      "cacheDirectories": [
+        "/root/.cache/go-build"
+      ]
+    },
+    {
+      "name": "setup",
+      "nixPackages": [
+        {
+          "name": "go"
+        }
+      ]
+    },
+    {
+      "name": "build",
+      "dependsOn": [
+        "install"
+      ],
+      "commands": [
+        "go build -o out"
+      ],
+      "cacheDirectories": [
+        "/root/.cache/go-build"
+      ]
+    }
+  ],
+  "startPhase": {
     "cmd": "./out",
     "runImage": "debian:bullseye-slim"
-  },
-  "variables": {
-    "CGO_ENABLED": "0"
-  },
-  "static_assets": {}
+  }
 }
