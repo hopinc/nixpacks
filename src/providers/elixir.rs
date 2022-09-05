@@ -1,7 +1,7 @@
 use super::Provider;
 use crate::nixpacks::{
     app::App,
-    environment::{Environment, EnvironmentVariables},
+    environment::Environment,
     nix::pkg::Pkg,
     plan::{
         phase::{Phase, StartPhase},
@@ -11,7 +11,6 @@ use crate::nixpacks::{
 use anyhow::Result;
 use regex::{Match, Regex};
 
-const MIX_CACHE_DIR: &'static &str = &"/root/mix";
 const DEFAULT_ELIXIR_PKG_NAME: &str = "elixir";
 
 pub struct ElixirProvider;
