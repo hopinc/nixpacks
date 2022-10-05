@@ -26,7 +26,7 @@ jobs:
           echo "NIXPACKS_VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
           echo "version is: ${{ NIXPACKS_VERSION }}"
 
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v3.1.0
         with:
           ref: main
           fetch-depth: 1
