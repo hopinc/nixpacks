@@ -20,7 +20,7 @@ const GO_BUILD_CACHE_DIR: &str = "/root/.cache/go-build";
 
 impl Provider for GolangProvider {
     fn name(&self) -> &str {
-        "golang"
+        "go"
     }
 
     fn detect(&self, app: &App, _env: &Environment) -> Result<bool> {
@@ -41,9 +41,9 @@ impl Provider for GolangProvider {
         }
 
         let mut build = if app.includes_file("go.mod") {
-            Phase::build(Some(format!("go build -o {}", BINARY_NAME)))
+            Phase::build(Some(format!("go build -o {BINARY_NAME}")))
         } else if app.includes_file("main.go") {
-            Phase::build(Some(format!("go build -o {} main.go", BINARY_NAME)))
+            Phase::build(Some(format!("go build -o {BINARY_NAME} main.go")))
         } else {
             Phase::build(None)
         };
@@ -51,13 +51,18 @@ impl Provider for GolangProvider {
         build.depends_on_phase("setup");
         plan.add_phase(build);
 
-        let mut start = StartPhase::new(format!("./{}", BINARY_NAME));
-        let cgo = env.get_variable("CGO_ENABLED").unwrap_or("0");
-        // Only run in a new image if CGO_ENABLED=0 (default)
-        if cgo != "1" {
-            start.run_in_slim_image();
+        let has_go_files = app.has_match("**/*.go");
+
+        if has_go_files {
+            let mut start = StartPhase::new(format!("./{BINARY_NAME}"));
+            let cgo = env.get_variable("CGO_ENABLED").unwrap_or("0");
+
+            // Only run in a new image if CGO_ENABLED=0 (default)
+            if cgo != "1" {
+                start.run_in_slim_image();
+            }
+            plan.set_start_phase(start);
         }
-        plan.set_start_phase(start);
 
         plan.add_variables(EnvironmentVariables::from([(
             "CGO_ENABLED".to_string(),

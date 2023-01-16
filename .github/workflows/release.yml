@@ -25,13 +25,13 @@ jobs:
           echo "version is: ${{ env.NIXPACKS_VERSION }}"
 
       - name: Checkout repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
         with:
           fetch-depth: 1
 
       - name: Build Changelog
         id: build_changelog
-        uses: mikepenz/release-changelog-builder-action@v3.3.1
+        uses: mikepenz/release-changelog-builder-action@v3.6.0
         with:
           configuration: ".github/changelog-configuration.json"
         env:
@@ -91,7 +91,7 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v2
+      uses: actions/checkout@v3
       with:
         fetch-depth: 1
 
@@ -159,7 +159,7 @@ jobs:
         echo ::set-output name=sha::"$(shasum -a 256 ./release/gitui-mac.tar.gz | awk '{printf $1}')"
 
     - name: Update homebrew tap
-      uses: mislav/bump-homebrew-formula-action@v1
+      uses: mislav/bump-homebrew-formula-action@v2
       if: "matrix.target == 'x86_64-apple-darwin' && !contains(github.ref, '-')"
       with:
         formula-name: nixpacks

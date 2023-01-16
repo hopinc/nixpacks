@@ -20,7 +20,7 @@ pub struct HaskellStackProvider {}
 
 impl Provider for HaskellStackProvider {
     fn name(&self) -> &str {
-        "haskell_stack"
+        "haskell"
     }
 
     fn detect(&self, app: &App, _env: &Environment) -> Result<bool> {
@@ -65,7 +65,7 @@ impl Provider for HaskellStackProvider {
             .get(0)
             .ok_or_else(|| anyhow::anyhow!("Failed to get executable name"))?;
 
-        let start = StartPhase::new(format!("/root/.local/bin/{}", name));
+        let start = StartPhase::new(format!("/root/.local/bin/{name}"));
 
         let plan = BuildPlan::new(&vec![setup, install, build], Some(start));
 

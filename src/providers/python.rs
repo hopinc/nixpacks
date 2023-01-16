@@ -19,8 +19,9 @@ use std::{collections::HashMap, fs};
 use super::{Provider, ProviderMetadata};
 
 const DEFAULT_PYTHON_PKG_NAME: &str = "python38";
-const POETRY_VERSION: &str = "1.1.13";
+const POETRY_VERSION: &str = "1.3.1";
 const PIP_CACHE_DIR: &str = "/root/.cache/pip";
+const DEFAULT_POETRY_PYTHON_PKG_NAME: &str = "python310";
 
 pub struct PythonProvider {}
 
@@ -32,7 +33,8 @@ impl Provider for PythonProvider {
     fn detect(&self, app: &App, _env: &Environment) -> Result<bool> {
         let has_python = app.includes_file("main.py")
             || app.includes_file("requirements.txt")
-            || app.includes_file("pyproject.toml");
+            || app.includes_file("pyproject.toml")
+            || app.includes_file("Pipfile");
         Ok(has_python)
     }
 
@@ -112,14 +114,18 @@ impl PythonProvider {
 
         pkgs.append(&mut vec![python_base_package]);
 
-        if PythonProvider::is_django(app, env)? && PythonProvider::is_using_postgres(app, env)? {
-            // Django with Postgres requires postgresql and gcc on top of the original python packages
+        if PythonProvider::is_using_postgres(app, env)? {
+            // Postgres requires postgresql and gcc on top of the original python packages
             pkgs.append(&mut vec![Pkg::new("postgresql")]);
         }
 
         if PythonProvider::is_django(app, env)? && PythonProvider::is_using_mysql(app, env)? {
             // We need the MySQL client library and its headers to build the mysqlclient python module needed by Django
             pkgs.append(&mut vec![Pkg::new("libmysqlclient.dev")]);
+        }
+
+        if app.includes_file("Pipfile") {
+            pkgs.append(&mut vec![Pkg::new("pipenv")]);
         }
 
         let mut setup = Phase::setup(Some(pkgs));
@@ -134,8 +140,8 @@ impl PythonProvider {
 
     fn install(&self, app: &App, _env: &Environment) -> Result<Option<Phase>> {
         let env_loc = "/opt/venv";
-        let create_env = format!("python -m venv {}", env_loc);
-        let activate_env = format!(". {}/bin/activate", env_loc);
+        let create_env = format!("python -m venv {env_loc}");
+        let activate_env = format!(". {env_loc}/bin/activate");
 
         if app.includes_file("requirements.txt") {
             let mut install_phase = Phase::install(Some(format!(
@@ -143,7 +149,7 @@ impl PythonProvider {
                 create_env, activate_env
             )));
 
-            install_phase.add_path(format!("{}/bin", env_loc));
+            install_phase.add_path(format!("{env_loc}/bin"));
             install_phase.add_cache_directory(PIP_CACHE_DIR.to_string());
 
             return Ok(Some(install_phase));
@@ -155,7 +161,7 @@ impl PythonProvider {
                     create_env, activate_env, install_poetry
                 )));
 
-                install_phase.add_path(format!("{}/bin", env_loc));
+                install_phase.add_path(format!("{env_loc}/bin"));
 
                 install_phase.add_cache_directory(PIP_CACHE_DIR.to_string());
 
@@ -167,8 +173,25 @@ impl PythonProvider {
             )));
 
             install_phase.add_file_dependency("pyproject.toml".to_string());
-            install_phase.add_path(format!("{}/bin", env_loc));
+            install_phase.add_path(format!("{env_loc}/bin"));
 
+            install_phase.add_cache_directory(PIP_CACHE_DIR.to_string());
+
+            return Ok(Some(install_phase));
+        } else if app.includes_file("Pipfile") {
+            // By default Pipenv creates an environment directory in some random location (for example `/root/.local/share/virtualenvs/app-4PlAip0Q`).
+            // `PIPENV_VENV_IN_PROJECT` tells it that there is an already activated `venv` environment, So Pipenv will use the same directory instead of creating new one (in our case it's `/app/.venv`)
+
+            let cmd = if app.includes_file("Pipfile.lock") {
+                "PIPENV_VENV_IN_PROJECT=1 pipenv install --deploy"
+            } else {
+                "PIPENV_VENV_IN_PROJECT=1 pipenv install --skip-lock"
+            };
+
+            let cmd = format!("{create_env} && {activate_env} && {cmd}");
+            let mut install_phase = Phase::install(Some(cmd));
+
+            install_phase.add_path(format!("{env_loc}/bin"));
             install_phase.add_cache_directory(PIP_CACHE_DIR.to_string());
 
             return Ok(Some(install_phase));
@@ -192,7 +215,7 @@ impl PythonProvider {
                 if let Some(entry_point) = meta.entry_point {
                     return Ok(Some(StartPhase::new(match entry_point {
                         EntryPoint::Command(cmd) => cmd,
-                        EntryPoint::Module(module) => format!("python -m {}", module),
+                        EntryPoint::Module(module) => format!("python -m {module}"),
                     })));
                 }
             }
@@ -207,12 +230,8 @@ impl PythonProvider {
 
     fn is_django(app: &App, _env: &Environment) -> Result<bool> {
         let has_manage = app.includes_file("manage.py");
-        let imports_django = vec!["requirements.txt", "pyproject.toml"].iter().any(|f| {
-            app.read_file(f)
-                .unwrap_or_default()
-                .to_lowercase()
-                .contains("django")
-        });
+        let imports_django = PythonProvider::uses_dep(app, "django")?;
+
         Ok(has_manage && imports_django)
     }
 
@@ -220,7 +239,9 @@ impl PythonProvider {
         // Check for the engine database type in settings.py
         let re = Regex::new(r"django.db.backends.postgresql").unwrap();
 
-        app.find_match(&re, "/**/*.py")
+        let uses_pg =
+            app.find_match(&re, "/**/*.py")? || PythonProvider::uses_dep(app, "psycopg2")?;
+        Ok(uses_pg)
     }
 
     fn is_using_mysql(app: &App, _env: &Environment) -> Result<bool> {
@@ -252,6 +273,15 @@ impl PythonProvider {
         bail!("Failed to find django application name!")
     }
 
+    fn parse_pipfile_python_version(file_content: &str) -> Result<Option<String>> {
+        let matches = Regex::new("(python_version|python_full_version) = ['|\"]([0-9|.]*)")?
+            .captures(file_content);
+
+        Ok(matches
+            .filter(|m| m.len() > 2)
+            .map(|m| m.get(2).unwrap().as_str().to_string()))
+    }
+
     fn get_nix_python_package(app: &App, env: &Environment) -> Result<Pkg> {
         // Fetch python versions into tuples with defaults
         fn as_default(v: Option<Match>) -> &str {
@@ -269,10 +299,16 @@ impl PythonProvider {
             custom_version = Some(app.read_file(".python-version")?);
         } else if app.includes_file("runtime.txt") {
             custom_version = Some(app.read_file("runtime.txt")?);
+        } else if app.includes_file("Pipfile") {
+            let file_content = &app.read_file("Pipfile")?;
+            custom_version = PythonProvider::parse_pipfile_python_version(file_content)?;
         }
 
         // If it's still none, return default
         if custom_version.is_none() {
+            if app.includes_file("poetry.lock") {
+                return Ok(Pkg::new(DEFAULT_POETRY_PYTHON_PKG_NAME));
+            }
             return Ok(Pkg::new(DEFAULT_PYTHON_PKG_NAME));
         }
         let custom_version = custom_version.unwrap();
@@ -286,6 +322,9 @@ impl PythonProvider {
 
         // If no matches, just use default
         if matches.is_none() {
+            if app.includes_file("poetry.lock") {
+                return Ok(Pkg::new(DEFAULT_POETRY_PYTHON_PKG_NAME));
+            }
             return Ok(Pkg::new(DEFAULT_PYTHON_PKG_NAME));
         }
         let matches = matches.unwrap();
@@ -299,7 +338,12 @@ impl PythonProvider {
             ("3", "8") => Ok(Pkg::new("python38")),
             ("3", "7") => Ok(Pkg::new("python37")),
             ("2", "7" | "_") => Ok(Pkg::new("python27")),
-            _ => Ok(Pkg::new(DEFAULT_PYTHON_PKG_NAME)),
+            _ => {
+                if app.includes_file("poetry.lock") {
+                    return Ok(Pkg::new(DEFAULT_POETRY_PYTHON_PKG_NAME));
+                }
+                Ok(Pkg::new(DEFAULT_PYTHON_PKG_NAME))
+            }
         }
     }
 
@@ -350,21 +394,19 @@ impl PythonProvider {
         ))
     }
 
-    #[allow(dead_code)]
     fn uses_dep(app: &App, dep: &str) -> Result<bool> {
-        let requirements_usage = app.includes_file("requirements.txt")
-            && app
-                .read_file("requirements.txt")?
-                .to_lowercase()
-                .contains(dep);
+        let is_used = vec!["requirements.txt", "pyproject.toml", "Pipfile"]
+            .iter()
+            .any(|f| {
+                app.includes_file(f)
+                    && app
+                        .read_file(f)
+                        .unwrap_or_default()
+                        .to_lowercase()
+                        .contains(dep)
+            });
 
-        let pyproject_usage = app.includes_file("pyproject.toml")
-            && app
-                .read_file("pyproject.toml")?
-                .to_lowercase()
-                .contains(dep);
-
-        Ok(requirements_usage || pyproject_usage)
+        Ok(is_used)
     }
 }
 
@@ -383,6 +425,26 @@ mod test {
             )?,
             Pkg::new(DEFAULT_PYTHON_PKG_NAME)
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_pipfile_python_version() -> Result<()> {
+        let file_content = "\npython_version = '3.11'\n";
+        let custom_version = PythonProvider::parse_pipfile_python_version(file_content)?.unwrap();
+
+        assert_eq!(custom_version, "3.11");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_pipfile_python_full_version() -> Result<()> {
+        let file_content = "\npython_full_version = '3.11.0'\n";
+        let custom_version = PythonProvider::parse_pipfile_python_version(file_content)?.unwrap();
+
+        assert_eq!(custom_version, "3.11.0");
 
         Ok(())
     }
@@ -443,7 +505,12 @@ mod test {
     }
 
     #[test]
-    fn test_django_postgres_detection() -> Result<()> {
+    fn test_postgres_detection() -> Result<()> {
+        assert!(PythonProvider::is_using_postgres(
+            &App::new("./examples/python-postgres",)?,
+            &Environment::new(BTreeMap::new())
+        )
+        .unwrap());
         assert!(PythonProvider::is_using_postgres(
             &App::new("./examples/python-django",)?,
             &Environment::new(BTreeMap::new())

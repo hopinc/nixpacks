@@ -1,10 +1,16 @@
 use super::{dockerfile_generation::DockerfileGenerator, DockerBuilderOptions, ImageBuilder};
 use crate::nixpacks::{
-    builder::docker::dockerfile_generation::OutputDir, environment::Environment, files,
-    logger::Logger, plan::BuildPlan,
+    builder::docker::{
+        dockerfile_generation::OutputDir,
+        file_server::FileServer,
+        incremental_cache::{IncrementalCache, IncrementalCacheDirs},
+    },
+    environment::Environment,
+    files,
+    logger::Logger,
+    plan::BuildPlan,
 };
 use anyhow::{bail, Context, Ok, Result};
-
 use std::{
     fs::{self, remove_dir_all, File},
     process::Command,
@@ -28,25 +34,39 @@ fn get_output_dir(app_src: &str, options: &DockerBuilderOptions) -> Result<Outpu
     }
 }
 
+use async_trait::async_trait;
+
+#[async_trait]
 impl ImageBuilder for DockerImageBuilder {
-    fn create_image(&self, app_src: &str, plan: &BuildPlan, env: &Environment) -> Result<()> {
+    async fn create_image(&self, app_src: &str, plan: &BuildPlan, env: &Environment) -> Result<()> {
         let id = Uuid::new_v4();
 
         let output = get_output_dir(app_src, &self.options)?;
         let name = self.options.name.clone().unwrap_or_else(|| id.to_string());
         output.ensure_output_exists()?;
 
+        let incremental_cache = IncrementalCache::default();
+        let incremental_cache_dirs = IncrementalCacheDirs::new(&output);
+
+        let file_server_config = if self.options.incremental_cache_image.is_some() {
+            incremental_cache_dirs.create()?;
+
+            let file_server = FileServer {};
+            let config = file_server.start(&incremental_cache_dirs);
+            Some(config)
+        } else {
+            None
+        };
+
         let dockerfile = plan
-            .generate_dockerfile(&self.options, env, &output)
+            .generate_dockerfile(&self.options, env, &output, file_server_config)
             .context("Generating Dockerfile for plan")?;
 
         // If printing the Dockerfile, don't write anything to disk
         if self.options.print_dockerfile {
-            println!("{}", dockerfile);
+            println!("{dockerfile}");
             return Ok(());
         }
-
-        println!("{}", plan.get_build_string()?);
 
         self.write_app(app_src, &output).context("Writing app")?;
         self.write_dockerfile(dockerfile, &output)
@@ -66,7 +86,14 @@ impl ImageBuilder for DockerImageBuilder {
 
             self.logger.log_section("Successfully Built!");
             println!("\nRun:");
-            println!("  docker run -it {}", name);
+            println!("  docker run -it {name}");
+
+            if self.options.incremental_cache_image.is_some() {
+                incremental_cache.create_image(
+                    &incremental_cache_dirs,
+                    &self.options.incremental_cache_image.clone().unwrap(),
+                )?;
+            }
 
             if output.is_temp {
                 remove_dir_all(output.root)?;
@@ -108,6 +135,10 @@ impl DockerImageBuilder {
             .arg("-t")
             .arg(name);
 
+        if self.options.verbose {
+            docker_build_cmd.arg("--progress=plain");
+        }
+
         if self.options.quiet {
             docker_build_cmd.arg("--quiet");
         }
@@ -130,7 +161,7 @@ impl DockerImageBuilder {
         for (name, value) in &plan.variables.clone().unwrap_or_default() {
             docker_build_cmd
                 .arg("--build-arg")
-                .arg(format!("{}={}", name, value));
+                .arg(format!("{name}={value}"));
         }
 
         // Add user defined tags and labels to the image
@@ -158,7 +189,7 @@ impl DockerImageBuilder {
     fn write_dockerfile(&self, dockerfile: String, output: &OutputDir) -> Result<()> {
         let dockerfile_path = output.get_absolute_path("Dockerfile");
         File::create(dockerfile_path.clone()).context("Creating Dockerfile file")?;
-        fs::write(dockerfile_path, dockerfile)?;
+        fs::write(dockerfile_path, dockerfile).context("Write Dockerfile")?;
 
         Ok(())
     }

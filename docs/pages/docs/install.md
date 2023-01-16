@@ -58,7 +58,7 @@ scoop install nixpacks
 
 Build and install from source using [Rust](https://www.rust-lang.org/tools/install).
 
-> Nixpacks currently requires a [Rust](https://www.rust-lang.org/tools/install) version no lower than [1.57](https://blog.rust-lang.org/2021/12/02/Rust-1.57.0.html)
+> Nixpacks currently requires a [Rust](https://www.rust-lang.org/tools/install) version no lower than [1.60](https://blog.rust-lang.org/2022/04/07/Rust-1.60.0.html)
 
 ```sh
 cargo install nixpacks

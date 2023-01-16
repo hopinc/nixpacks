@@ -44,7 +44,7 @@ impl Environment {
     }
 
     pub fn get_config_variable(&self, name: &str) -> Option<String> {
-        self.get_variable(format!("NIXPACKS_{}", name).as_str())
+        self.get_variable(format!("NIXPACKS_{name}").as_str())
             .map(|var| var.replace('\n', ""))
     }
 
@@ -66,6 +66,12 @@ impl Environment {
 
     pub fn clone_variables(env: &Environment) -> EnvironmentVariables {
         env.variables.clone()
+    }
+
+    pub fn append_variables(env: &Environment, variables: EnvironmentVariables) -> Environment {
+        let mut new_env = Environment::new(Environment::clone_variables(env));
+        new_env.variables.extend(variables);
+        new_env
     }
 }
 

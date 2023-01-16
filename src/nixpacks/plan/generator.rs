@@ -11,12 +11,11 @@ use crate::{
 use anyhow::{bail, Context, Ok, Result};
 use colored::Colorize;
 
-use super::merge::Mergeable;
+use super::{
+    merge::Mergeable,
+    utils::{fill_auto_in_vec, remove_autos_from_vec},
+};
 
-// This line is automatically updated.
-// Last Modified: 2022-09-05 17:08:13 UTC+0000
-// https://github.com/NixOS/nixpkgs/commit/21de2b973f9fee595a7a1ac4693efff791245c34
-pub const NIXPKGS_ARCHIVE: &str = "21de2b973f9fee595a7a1ac4693efff791245c34";
 const NIXPACKS_METADATA: &str = "NIXPACKS_METADATA";
 
 #[derive(Clone, Default, Debug)]
@@ -26,7 +25,7 @@ pub struct GeneratePlanOptions {
 }
 
 pub struct NixpacksBuildPlanGenerator<'a> {
-    providers: &'a [&'a dyn Provider],
+    providers: &'a [&'a (dyn Provider)],
     config: GeneratePlanOptions,
 }
 
@@ -37,11 +36,18 @@ impl<'a> PlanGenerator for NixpacksBuildPlanGenerator<'a> {
 
         Ok(plan)
     }
+
+    fn get_plan_providers(&self, app: &App, env: &Environment) -> Result<Vec<String>> {
+        let plan_before_providers = self.get_plan_before_providers(app, env)?;
+        let providers = self.get_all_providers(app, env, plan_before_providers.providers)?;
+
+        Ok(providers)
+    }
 }
 
 impl NixpacksBuildPlanGenerator<'_> {
     pub fn new<'a>(
-        providers: &'a [&'a dyn Provider],
+        providers: &'a [&'a (dyn Provider)],
         config: GeneratePlanOptions,
     ) -> NixpacksBuildPlanGenerator<'a> {
         NixpacksBuildPlanGenerator { providers, config }
@@ -49,13 +55,16 @@ impl NixpacksBuildPlanGenerator<'_> {
 
     /// Get a build plan from the provider and by applying the config from the environment
     fn get_build_plan(&self, app: &App, env: &Environment) -> Result<BuildPlan> {
-        let file_plan = self.read_file_plan(app)?;
-        let env_plan = BuildPlan::from_environment(env);
-        let cli_plan = self.config.plan.clone().unwrap_or_default();
-        let plan_before_providers = BuildPlan::merge_plans(&vec![file_plan, env_plan, cli_plan]);
+        let plan_before_providers = self.get_plan_before_providers(app, env)?;
+
+        // Add the variables from the nixpacks.toml to environment
+        let env = &Environment::append_variables(
+            env,
+            plan_before_providers.variables.clone().unwrap_or_default(),
+        );
 
         let provider_plan =
-            self.get_plan_from_providers(plan_before_providers.providers.clone(), app, env)?;
+            self.get_plan_from_providers(app, env, plan_before_providers.providers.clone())?;
 
         let procfile_plan = (ProcfileProvider {})
             .get_build_plan(app, env)?
@@ -68,12 +77,21 @@ impl NixpacksBuildPlanGenerator<'_> {
             plan.add_variables(Environment::clone_variables(env));
         }
 
-        plan.pin();
+        plan.pin(env.is_config_variable_truthy("DEBIAN"));
 
         Ok(plan)
     }
 
-    fn get_auto_providers(&self, app: &App, env: &Environment) -> Result<Vec<String>> {
+    fn get_plan_before_providers(&self, app: &App, env: &Environment) -> Result<BuildPlan> {
+        let file_plan = self.read_file_plan(app, env)?;
+        let env_plan = BuildPlan::from_environment(env);
+        let cli_plan = self.config.plan.clone().unwrap_or_default();
+        let plan_before_providers = BuildPlan::merge_plans(&vec![file_plan, env_plan, cli_plan]);
+
+        Ok(plan_before_providers)
+    }
+
+    fn get_detected_providers(&self, app: &App, env: &Environment) -> Result<Vec<String>> {
         let mut providers = Vec::new();
 
         for provider in self.providers {
@@ -88,20 +106,38 @@ impl NixpacksBuildPlanGenerator<'_> {
         Ok(providers)
     }
 
-    fn get_plan_from_providers(
+    /// Get all the providers that will be used to create the plan
+    pub fn get_all_providers(
         &self,
-        provider_names: Option<Vec<String>>,
         app: &App,
         env: &Environment,
+        manually_providers: Option<Vec<String>>,
+    ) -> Result<Vec<String>> {
+        let detected_providers = self.get_detected_providers(app, env)?;
+        let provider_names = remove_autos_from_vec(
+            fill_auto_in_vec(
+                Some(detected_providers),
+                Some(manually_providers.unwrap_or_else(|| vec!["...".to_string()])),
+            )
+            .unwrap_or_default(),
+        );
+
+        Ok(provider_names)
+    }
+
+    fn get_plan_from_providers(
+        &self,
+        app: &App,
+        env: &Environment,
+        manual_providers: Option<Vec<String>>,
     ) -> Result<BuildPlan> {
-        let provider_names = if let Some(provider_names) = provider_names {
-            provider_names
-        } else {
-            self.get_auto_providers(app, env)?
-        };
+        let provider_names = self.get_all_providers(app, env, manual_providers)?;
 
         if provider_names.len() > 1 {
-            bail!("Only a single provider is supported at this time");
+            println!(
+                "{}",
+                "\n Using multiple providers is experimental\n".bright_yellow()
+            );
         }
 
         let mut plan = BuildPlan::default();
@@ -123,9 +159,9 @@ impl NixpacksBuildPlanGenerator<'_> {
                         .join_as_comma_separated(provider.name().to_owned());
                     metadata.push(metadata_string);
 
-                    plan = BuildPlan::merge(&plan, &provider_plan);
+                    plan = BuildPlan::merge(&provider_plan, &plan);
                 }
-            } else {
+            } else if name != "..." && name != "@auto" {
                 bail!("Provider {} not found", name);
             }
 
@@ -142,9 +178,15 @@ impl NixpacksBuildPlanGenerator<'_> {
         Ok(plan)
     }
 
-    fn read_file_plan(&self, app: &App) -> Result<BuildPlan> {
+    fn read_file_plan(&self, app: &App, env: &Environment) -> Result<BuildPlan> {
         let file_path = if let Some(file_path) = &self.config.config_file {
             Some(file_path.clone())
+        } else if let Some(env_config_file) = env.get_config_variable("CONFIG_FILE") {
+            if !app.includes_file(&env_config_file) {
+                bail!("Config file {} does not exist", env_config_file);
+            }
+
+            Some(env_config_file)
         } else if app.includes_file("nixpacks.toml") {
             Some("nixpacks.toml".to_owned())
         } else if app.includes_file("nixpacks.json") {
@@ -159,7 +201,7 @@ impl NixpacksBuildPlanGenerator<'_> {
                 let ext = filename.extension().unwrap_or_default();
 
                 let contents = app.read_file(file_path.as_str()).with_context(|| {
-                    format!("Failed to read Nixpacks config file `{}`", file_path)
+                    format!("Failed to read Nixpacks config file `{file_path}`")
                 })?;
                 let plan = if ext == "toml" {
                     BuildPlan::from_toml(&contents)
@@ -170,7 +212,7 @@ impl NixpacksBuildPlanGenerator<'_> {
                 };
 
                 Some(plan.with_context(|| {
-                    format!("Failed to parse Nixpacks config file `{}`", file_path)
+                    format!("Failed to parse Nixpacks config file `{file_path}`")
                 })?)
             } else {
                 None

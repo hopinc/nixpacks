@@ -2,6 +2,7 @@ use crate::nixpacks::{app::App, environment::Environment, plan::BuildPlan};
 use anyhow::Result;
 
 pub mod clojure;
+pub mod cobol;
 pub mod crystal;
 pub mod csharp;
 pub mod dart;
@@ -21,7 +22,7 @@ pub mod staticfile;
 pub mod swift;
 pub mod zig;
 
-pub trait Provider {
+pub trait Provider: Send + Sync {
     fn name(&self) -> &str;
     fn detect(&self, _app: &App, _env: &Environment) -> Result<bool> {
         Ok(false)

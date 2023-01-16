@@ -6,12 +6,13 @@ expression: plan
   "providers": [],
   "buildImage": "[build_image]",
   "variables": {
-    "NIXPACKS_METADATA": "Java"
+    "NIXPACKS_METADATA": "java"
   },
   "phases": {
     "build": {
       "name": "build",
       "dependsOn": [
+        "install",
         "setup"
       ],
       "cmds": [
@@ -24,7 +25,7 @@ expression: plan
     "setup": {
       "name": "setup",
       "nixPkgs": [
-        "jdk",
+        "jdk17",
         "maven"
       ],
       "nixOverlays": [],

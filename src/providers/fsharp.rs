@@ -16,7 +16,7 @@ pub const ARTIFACT_DIR: &str = "out";
 
 impl Provider for FSharpProvider {
     fn name(&self) -> &str {
-        "fsharp"
+        "f#"
     }
 
     fn detect(&self, app: &App, _env: &Environment) -> Result<bool> {
@@ -37,7 +37,7 @@ impl Provider for FSharpProvider {
             .context("Invalid file_name")?
             .to_str()
             .context("Invalid project_name")?;
-        let start = StartPhase::new(format!("./{}/{}", ARTIFACT_DIR, project_name));
+        let start = StartPhase::new(format!("./{ARTIFACT_DIR}/{project_name}"));
 
         let mut plan = BuildPlan::new(&vec![setup, install, build], Some(start));
         plan.add_variables(EnvironmentVariables::from([

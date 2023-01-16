@@ -2,6 +2,7 @@ use super::{node::NodeProvider, Provider};
 use crate::nixpacks::{
     app::App,
     environment::{Environment, EnvironmentVariables},
+    nix::pkg::Pkg,
     plan::{
         phase::{Phase, StartPhase},
         BuildPlan,
@@ -16,7 +17,7 @@ const BUNDLE_CACHE_DIR: &str = "/root/.bundle/cache";
 
 impl Provider for RubyProvider {
     fn name(&self) -> &str {
-        "Ruby"
+        "ruby"
     }
 
     fn detect(&self, app: &App, _env: &Environment) -> Result<bool> {
@@ -25,7 +26,7 @@ impl Provider for RubyProvider {
 
     fn get_build_plan(&self, app: &App, env: &Environment) -> Result<Option<BuildPlan>> {
         let setup = self.get_setup(app, env)?;
-        let install = self.get_install(app)?;
+        let install = self.get_install(app, env)?;
         let build = self.get_build(app)?;
         let start = self.get_start(app)?;
 
@@ -38,7 +39,7 @@ impl Provider for RubyProvider {
         );
 
         let node = NodeProvider::default();
-        if node.detect(app, env)? {
+        if node.detect(app, env)? || self.uses_gem_dep(app, "execjs") {
             let node_build_plan = node.get_build_plan(app, env)?;
             if let Some(node_build_plan) = node_build_plan {
                 // Include the install phase from the node provider
@@ -48,16 +49,19 @@ impl Provider for RubyProvider {
             }
         }
 
-        plan.add_variables(self.get_environment_variables(app)?);
+        plan.add_variables(self.get_environment_variables(app, env)?);
 
         Ok(Some(plan))
     }
 }
 
 impl RubyProvider {
-    fn get_setup(&self, app: &App, _env: &Environment) -> Result<Option<Phase>> {
+    fn get_setup(&self, app: &App, env: &Environment) -> Result<Option<Phase>> {
         let mut setup = Phase::setup(None);
         setup.add_apt_pkgs(vec!["procps".to_string()]);
+
+        // Don't re-install ruby if the code has changed
+        setup.only_include_files = Some(Vec::new());
 
         if self.uses_postgres(app)? {
             setup.add_apt_pkgs(vec!["libpq-dev".to_string()]);
@@ -67,41 +71,86 @@ impl RubyProvider {
             setup.add_apt_pkgs(vec!["default-libmysqlclient-dev".to_string()]);
         }
 
-        setup.add_cmd(
-            "curl -sSL https://get.rvm.io | bash -s stable && . /etc/profile.d/rvm.sh".to_string(),
+        if self.uses_gem_dep(app, "magick") {
+            setup.add_apt_pkgs(vec![String::from("libmagickwand-dev")]);
+            setup.add_nix_pkgs(&[Pkg::new("imagemagick")]);
+        }
+
+        if self.uses_gem_dep(app, "charlock_holmes") {
+            setup.add_apt_pkgs(vec![String::from("libicu-dev")]);
+        }
+
+        let ruby_version = self.get_ruby_version(app, env)?;
+        let ruby_version = ruby_version.trim_start_matches("ruby-");
+
+        // Packages necessary for rbenv
+        // https://github.com/rbenv/ruby-build/wiki#ubuntudebianmint
+        setup.add_apt_pkgs(
+            vec![
+                "git",
+                "curl",
+                "autoconf",
+                "bison",
+                "build-essential",
+                "libssl-dev",
+                "libyaml-dev",
+                "libreadline6-dev",
+                "zlib1g-dev",
+                "libncurses5-dev",
+                "libffi-dev",
+                "libgdbm6",
+                "libgdbm-dev",
+                "libdb-dev",
+            ]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect(),
         );
 
-        setup.add_cmd(format!("rvm install {}", self.get_ruby_version(app)?));
-        setup.add_cmd(format!("rvm --default use {}", self.get_ruby_version(app)?));
-        setup.add_cmd(format!("gem install {}", self.get_bundler_version(app)));
-        setup.add_cmd("echo 'source /usr/local/rvm/scripts/rvm' >> /root/.profile".to_string());
+        let bundler_version = self.get_bundler_version(app);
+
+        setup.add_cmd(format!(
+            "curl -fsSL https://github.com/rbenv/rbenv-installer/raw/HEAD/bin/rbenv-installer | bash -s stable \
+            && printf '\\neval \"$(rbenv init -)\"' >> /root/.profile \
+            && . /root/.profile \
+            && rbenv install {ruby_version} \
+            && rbenv global {ruby_version} \
+            && gem install {bundler_version}"
+        ));
+
+        setup.add_path("$HOME/.rbenv/bin".to_string());
 
         Ok(Some(setup))
     }
 
-    fn get_install(&self, app: &App) -> Result<Option<Phase>> {
+    fn get_install(&self, app: &App, env: &Environment) -> Result<Option<Phase>> {
         let mut install = Phase::install(None);
         install.add_cache_directory(BUNDLE_CACHE_DIR.to_string());
+
+        if !self.uses_gem_dep(app, "local") {
+            // Only run install if Gemfile or Gemfile.lock has changed
+            install.only_include_files =
+                Some(vec!["Gemfile".to_string(), "Gemfile.lock".to_string()]);
+        }
 
         install.add_cmd("bundle install".to_string());
 
         // Ensure that the ruby executable is in the PATH
-        let ruby_version = self.get_ruby_version(app)?;
-        install.add_path(format!("/usr/local/rvm/rubies/{}/bin", ruby_version));
-        install.add_path(format!("/usr/local/rvm/gems/{}/bin", ruby_version));
-        install.add_path(format!("/usr/local/rvm/gems/{}@global/bin", ruby_version));
+        let ruby_version = self.get_ruby_version(app, env)?;
+        install.add_path(format!("/usr/local/rvm/rubies/{ruby_version}/bin"));
+        install.add_path(format!("/usr/local/rvm/gems/{ruby_version}/bin"));
+        install.add_path(format!("/usr/local/rvm/gems/{ruby_version}@global/bin"));
 
         Ok(Some(install))
     }
 
     fn get_build(&self, app: &App) -> Result<Option<Phase>> {
+        let mut build = Phase::build(None);
         if self.is_rails_app(app) {
-            Ok(Some(Phase::build(Some(
-                "bundle exec rake assets:precompile".to_string(),
-            ))))
-        } else {
-            Ok(None)
+            build.add_cmd("bundle exec rake assets:precompile".to_string());
         }
+
+        Ok(Some(build))
     }
 
     fn get_start(&self, app: &App) -> Result<Option<StartPhase>> {
@@ -112,9 +161,13 @@ impl RubyProvider {
         }
     }
 
-    fn get_environment_variables(&self, app: &App) -> Result<EnvironmentVariables> {
-        let ruby_version = self.get_ruby_version(app)?;
-        Ok(EnvironmentVariables::from([
+    fn get_environment_variables(
+        &self,
+        app: &App,
+        env: &Environment,
+    ) -> Result<EnvironmentVariables> {
+        let ruby_version = self.get_ruby_version(app, env)?;
+        let mut env_vars = EnvironmentVariables::from([
             ("BUNDLE_GEMFILE".to_string(), "/app/Gemfile".to_string()),
             (
                 "GEM_PATH".to_string(),
@@ -125,9 +178,17 @@ impl RubyProvider {
             ),
             (
                 "GEM_HOME".to_string(),
-                format!("/usr/local/rvm/gems/{}", ruby_version),
+                format!("/usr/local/rvm/gems/{ruby_version}"),
             ),
-        ]))
+            ("MALLOC_ARENA_MAX".to_string(), "2".to_string()),
+        ]);
+
+        if self.is_rails_app(app) {
+            env_vars.insert("RAILS_LOG_TO_STDOUT".to_string(), "enabled".to_string());
+            env_vars.insert("RAILS_SERVE_STATIC_FILES".to_string(), "1".to_string());
+        }
+
+        Ok(env_vars)
     }
 
     fn get_start_command(&self, app: &App) -> Option<String> {
@@ -151,7 +212,10 @@ impl RubyProvider {
         }
     }
 
-    fn get_ruby_version(&self, app: &App) -> Result<String> {
+    fn get_ruby_version(&self, app: &App, env: &Environment) -> Result<String> {
+        if let Some(version) = env.get_config_variable("RUBY_VERSION") {
+            return Ok(version);
+        }
         if app.includes_file(".ruby-version") {
             return Ok(app.read_file(".ruby-version")?.trim().to_string());
         }
@@ -207,16 +271,28 @@ impl RubyProvider {
         }
         Ok(false)
     }
+
+    fn uses_gem_dep(&self, app: &App, dependency: &str) -> bool {
+        ["Gemfile", "Gemfile.lock"]
+            .iter()
+            .any(|file| app.read_file(file).unwrap_or_default().contains(dependency))
+    }
 }
 
 #[cfg(test)]
 mod test {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     #[test]
     fn test_gemfile_lock_version() -> Result<()> {
         assert_eq!(
-            RubyProvider::get_ruby_version(&RubyProvider {}, &App::new("./examples/ruby")?)?,
+            RubyProvider::get_ruby_version(
+                &RubyProvider {},
+                &App::new("./examples/ruby")?,
+                &Environment::default()
+            )?,
             "ruby-3.1.2"
         );
 
@@ -228,6 +304,7 @@ mod test {
         assert!(RubyProvider::get_ruby_version(
             &RubyProvider {},
             &App::new("./examples/ruby-no-version")?,
+            &Environment::default(),
         )
         .is_err());
         Ok(())
@@ -238,9 +315,27 @@ mod test {
         assert_eq!(
             RubyProvider::get_ruby_version(
                 &RubyProvider {},
-                &App::new("./examples/ruby-rails-postgres")?
+                &App::new("./examples/ruby-rails-postgres")?,
+                &Environment::default(),
             )?,
             "3.1.2"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_version_arg() -> Result<()> {
+        assert_eq!(
+            RubyProvider::get_ruby_version(
+                &RubyProvider {},
+                &App::new("./examples/ruby")?,
+                &Environment::new(BTreeMap::from([(
+                    "NIXPACKS_RUBY_VERSION".to_string(),
+                    "3.1.1".to_string()
+                )]))
+            )?,
+            "3.1.1"
         );
 
         Ok(())

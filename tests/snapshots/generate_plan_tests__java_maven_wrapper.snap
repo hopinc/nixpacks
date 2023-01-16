@@ -6,16 +6,17 @@ expression: plan
   "providers": [],
   "buildImage": "[build_image]",
   "variables": {
-    "NIXPACKS_METADATA": "Java"
+    "NIXPACKS_METADATA": "java"
   },
   "phases": {
     "build": {
       "name": "build",
       "dependsOn": [
+        "install",
         "setup"
       ],
       "cmds": [
-        "./mvnw -DoutputFile=target/mvn-dependency-list.log -B -DskipTests clean dependency:list install"
+        "chmod +x ./mvnw && ./mvnw -DoutputFile=target/mvn-dependency-list.log -B -DskipTests clean dependency:list install"
       ],
       "cacheDirectories": [
         ".m2/repository"
@@ -24,7 +25,7 @@ expression: plan
     "setup": {
       "name": "setup",
       "nixPkgs": [
-        "jdk",
+        "jdk17",
         "maven"
       ],
       "nixOverlays": [],

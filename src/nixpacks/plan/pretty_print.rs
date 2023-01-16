@@ -11,12 +11,13 @@ const MAX_BOX_WIDTH: usize = 80;
 
 impl BuildPlan {
     pub fn get_build_string(&self) -> Result<String> {
-        let title_str = format!(" Nixpacks v{} ", NIX_PACKS_VERSION);
+        let title_str = format!(" Nixpacks v{NIX_PACKS_VERSION} ");
         let title_width = console::measure_text_width(title_str.as_str());
 
         let phase_contents = self
             .get_sorted_phases()?
             .iter()
+            .filter(|phase| phase.uses_nix() || phase.apt_pkgs.is_some() || phase.cmds.is_some())
             .map(|phase| (phase.get_name(), self.get_phase_content(phase).unwrap()))
             .collect::<Vec<_>>();
 
@@ -58,13 +59,9 @@ impl BuildPlan {
         let middle_padding_width = console::measure_text_width(middle_padding.as_str());
         let middle_padding = middle_padding.cyan().dimmed().to_string();
 
-        let box_width = std::cmp::min(
-            MAX_BOX_WIDTH,
-            std::cmp::max(
-                MIN_BOX_WIDTH,
-                (edge_width * 2) + first_column_width + middle_padding_width + max_right_content,
-            ),
-        );
+        let box_width =
+            ((edge_width * 2) + first_column_width + middle_padding_width + max_right_content)
+                .clamp(MIN_BOX_WIDTH, MAX_BOX_WIDTH);
 
         let second_column_width =
             box_width - (edge_width * 2) - first_column_width - middle_padding_width;
@@ -122,7 +119,7 @@ impl BuildPlan {
                 )
             })
             .collect::<Vec<_>>()
-            .join(format!("\n{}\n", hor_sep).as_str());
+            .join(format!("\n{hor_sep}\n").as_str());
 
         let start_row = print_row(
             "start",

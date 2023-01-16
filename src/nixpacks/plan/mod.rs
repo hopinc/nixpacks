@@ -3,7 +3,7 @@ use self::{
     phase::{Phase, Phases, StartPhase},
     topological_sort::topological_sort,
 };
-use super::images::DEFAULT_BASE_IMAGE;
+use super::images::{DEBIAN_BASE_IMAGE, UBUNTU_BASE_IMAGE};
 use crate::nixpacks::{
     app::{App, StaticAssets},
     environment::{Environment, EnvironmentVariables},
@@ -18,9 +18,11 @@ pub mod merge;
 pub mod phase;
 pub mod pretty_print;
 mod topological_sort;
+mod utils;
 
 pub trait PlanGenerator {
     fn generate_plan(&mut self, app: &App, environment: &Environment) -> Result<BuildPlan>;
+    fn get_plan_providers(&self, app: &App, environment: &Environment) -> Result<Vec<String>>;
 }
 
 #[serde_with::skip_serializing_none]
@@ -62,6 +64,18 @@ impl BuildPlan {
         let mut plan: BuildPlan = serde_json::from_str(&json.into())?;
         plan.resolve_phase_names();
         Ok(plan)
+    }
+
+    pub fn to_toml(&self) -> Result<String> {
+        let mut plan = self.clone();
+        plan.remove_phase_names();
+        Ok(toml::to_string_pretty(&plan)?)
+    }
+
+    pub fn to_json(&self) -> Result<String> {
+        let mut plan = self.clone();
+        plan.remove_phase_names();
+        Ok(serde_json::to_string_pretty(&plan)?)
     }
 
     pub fn add_phase(&mut self, phase: Phase) {
@@ -166,7 +180,7 @@ impl BuildPlan {
             self.add_phase(phase);
         }
 
-        format!("{}:{}", prefix, phase_name)
+        format!("{prefix}:{phase_name}")
     }
 
     pub fn add_dependency_between_phases(&mut self, dependant: &str, dependency: &str) {
@@ -182,6 +196,13 @@ impl BuildPlan {
         }
     }
 
+    pub fn remove_phase_names(&mut self) {
+        let phases = self.phases.get_or_insert(BTreeMap::default());
+        for (_, phase) in phases.iter_mut() {
+            phase.name = None;
+        }
+    }
+
     pub fn from_environment(env: &Environment) -> Self {
         let mut phases: Vec<Phase> = Vec::new();
 
@@ -190,19 +211,13 @@ impl BuildPlan {
         let mut uses_setup = false;
 
         if let Some(pkg_string) = env.get_config_variable("PKGS") {
-            let mut pkgs = pkg_string
-                .split(' ')
-                .map(std::string::ToString::to_string)
-                .collect::<Vec<_>>();
+            let mut pkgs = split_env_string(pkg_string.as_str());
             pkgs.push("...".to_string());
             setup.nix_pkgs = Some(pkgs);
             uses_setup = true;
         }
         if let Some(apt_string) = env.get_config_variable("APT_PKGS") {
-            let mut apts = apt_string
-                .split(' ')
-                .map(std::string::ToString::to_string)
-                .collect::<Vec<_>>();
+            let mut apts = split_env_string(apt_string.as_str());
             apts.push("...".to_string());
             setup.apt_pkgs = Some(apts);
             uses_setup = true;
@@ -223,13 +238,27 @@ impl BuildPlan {
 
         // Install
         if let Some(cmd_string) = env.get_config_variable("INSTALL_CMD") {
-            let install = Phase::install(Some(cmd_string));
+            let mut install = Phase::install(Some(cmd_string));
+
+            if let Some(cache_dirs) = env.get_config_variable("INSTALL_CACHE_DIRS") {
+                split_env_string(cache_dirs.as_str())
+                    .iter()
+                    .for_each(|dir| install.add_cache_directory(dir));
+            }
+
             phases.push(install);
         }
 
         // Build
         if let Some(cmd_string) = env.get_config_variable("BUILD_CMD") {
-            let build = Phase::build(Some(cmd_string));
+            let mut build = Phase::build(Some(cmd_string));
+
+            if let Some(cache_dirs) = env.get_config_variable("BUILD_CACHE_DIRS") {
+                split_env_string(cache_dirs.as_str())
+                    .iter()
+                    .for_each(|dir| build.add_cache_directory(dir));
+            }
+
             phases.push(build);
         }
 
@@ -239,16 +268,21 @@ impl BuildPlan {
         BuildPlan::new(&phases, start)
     }
 
-    pub fn pin(&mut self) {
+    pub fn pin(&mut self, use_debian: bool) {
         self.providers = Some(Vec::new());
         if self.build_image.is_none() {
-            self.build_image = Some(DEFAULT_BASE_IMAGE.to_string());
+            let base_image = if use_debian {
+                DEBIAN_BASE_IMAGE
+            } else {
+                UBUNTU_BASE_IMAGE
+            };
+            self.build_image = Some(base_image.to_string());
         }
 
         self.resolve_phase_names();
         let phases = self.phases.get_or_insert(Phases::default());
         for (_, phase) in phases.iter_mut() {
-            phase.pin();
+            phase.pin(use_debian);
         }
 
         if let Some(start) = &mut self.start_phase {
@@ -292,9 +326,57 @@ impl topological_sort::TopItem for (String, Phase) {
     }
 }
 
+fn split_env_string(s: &str) -> Vec<String> {
+    s.split([' ', ','])
+        .map(std::string::ToString::to_string)
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn get_plan_from_environment() {
+        let env = Environment::from_envs(vec![
+            "NIXPACKS_PKGS=cowsay sl",
+            "NIXPACKS_APT_PKGS=foo,bar",
+            "NIXPACKS_LIBS=my-lib",
+            "NIXPACKS_INSTALL_CMD=yarn install",
+            "NIXPACKS_INSTALL_CACHE_DIRS=install/cache/dir",
+            "NIXPACKS_BUILD_CMD=yarn build",
+            "NIXPACKS_BUILD_CACHE_DIRS=build/cache/dir",
+            "NIXPACKS_START_CMD=yarn start",
+        ])
+        .unwrap();
+        let env_plan = BuildPlan::from_environment(&env);
+
+        let result = BuildPlan::from_toml(
+            r#"
+            [phases.setup]
+            nixPkgs = ["cowsay", "sl", "..."]
+            aptPkgs = ["foo", "bar", "..."]
+            nixLibs = ["my-lib", "..."]
+
+            [phases.install]
+            cmds = ["yarn install"]
+            cacheDirectories = ["install/cache/dir"]
+            dependsOn = ["setup"]
+
+            [phases.build]
+            cmds = ["yarn build"]
+            cacheDirectories = ["build/cache/dir"]
+            dependsOn = ["install"]
+
+            [start]
+            cmd = "yarn start"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(result, env_plan);
+    }
 
     #[test]
     fn test_get_phases_with_dependencies() {
@@ -311,7 +393,6 @@ mod test {
 
         let plan = BuildPlan::new(&vec![setup, install, build, another], None);
 
-        // let phases = topological_sort(plan.get_phases_with_dependencies("build")).unwrap();
         let build_phase = plan.get_phases_with_dependencies("build");
         let phases = build_phase.values();
 
@@ -334,11 +415,23 @@ mod test {
         )
         .unwrap();
 
-        plan.pin();
+        plan.pin(false);
         assert_eq!(
             plan.get_phase("setup").unwrap().nix_pkgs,
             Some(vec!["nodejs".to_string(), "yarn".to_string()])
         );
         assert!(plan.get_phase("setup").unwrap().nixpkgs_archive.is_some());
+    }
+
+    #[test]
+    fn test_split_env_string() {
+        assert_eq!(
+            split_env_string("nodejs yarn"),
+            vec!["nodejs".to_string(), "yarn".to_string()]
+        );
+        assert_eq!(
+            split_env_string("nodejs, yarn"),
+            vec!["nodejs".to_string(), "yarn".to_string()]
+        );
     }
 }

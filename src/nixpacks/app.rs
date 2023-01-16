@@ -35,7 +35,6 @@ impl App {
     }
 
     /// Check if a file exists
-
     pub fn includes_file(&self, name: &str) -> bool {
         self.source.join(name).is_file()
     }
@@ -94,7 +93,6 @@ impl App {
     }
 
     /// Check if a path matching a glob exists
-
     pub fn has_match(&self, pattern: &str) -> bool {
         match self.find_files(pattern) {
             Ok(v) => !v.is_empty(),
@@ -109,7 +107,11 @@ impl App {
     pub fn read_file(&self, name: &str) -> Result<String> {
         let data = fs::read_to_string(PathBuf::from_slash_lossy(
             self.source.join(name).as_os_str(),
-        ))?;
+        ))
+        .with_context(|| {
+            let relative_path = self.strip_source_path(Path::new(name)).unwrap();
+            format!("Error reading {}", relative_path.to_str().unwrap())
+        })?;
 
         Ok(data.replace("\r\n", "\n"))
     }
@@ -135,9 +137,27 @@ impl App {
     }
 
     /// Check if a directory exists
-
     pub fn includes_directory(&self, name: &str) -> bool {
         self.source.join(name).is_dir()
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn is_file_executable(&self, name: &str) -> bool {
+        true
+    }
+
+    /// Check if a path is an executable file
+    #[cfg(not(target_os = "windows"))]
+    pub fn is_file_executable(&self, name: &str) -> bool {
+        use std::os::unix::prelude::PermissionsExt;
+
+        let path = self.source.join(name);
+        if path.is_file() {
+            let metadata = path.metadata().unwrap();
+            metadata.permissions().mode() & 0o111 != 0
+        } else {
+            false
+        }
     }
 
     pub fn read_json<T>(&self, name: &str) -> Result<T>
@@ -191,9 +211,8 @@ impl App {
     }
 
     /// Get the path in the container to an asset defined in `static_assets`.
-
     pub fn asset_path(&self, name: &str) -> String {
-        format!("{}{}", ASSETS_DIR, name)
+        format!("{ASSETS_DIR}{name}")
     }
 }
 
@@ -225,6 +244,15 @@ mod tests {
             app.read_file("index.ts")?.trim_end(),
             "console.log(\"Hello from NPM\");"
         );
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn test_is_file_executable() -> Result<()> {
+        let app = App::new("./examples/java-gradle-hello-world")?;
+        assert!(app.is_file_executable("gradlew"));
+        assert!(!app.is_file_executable("build.gradle"));
         Ok(())
     }
 

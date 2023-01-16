@@ -1,10 +1,12 @@
-use super::generator::NIXPKGS_ARCHIVE;
 use crate::nixpacks::{
-    images::{DEBIAN_SLIM_IMAGE, DEFAULT_BASE_IMAGE},
-    nix::pkg::Pkg,
+    images::{DEFAULT_BASE_IMAGE, STANDALONE_IMAGE},
+    nix::{pkg::Pkg, NIXPACKS_ARCHIVE_LEGACY_OPENSSL, NIXPKGS_ARCHIVE},
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
+use std::hash::Hash;
+
+use super::utils::remove_autos_from_vec;
 
 pub type Phases = BTreeMap<String, Phase>;
 
@@ -65,7 +67,7 @@ impl Phase {
     }
 
     pub fn prefix_name(&mut self, prefix: &str) {
-        self.name = Some(format!("{}:{}", prefix, self.get_name()));
+        self.name = Some(format!("{prefix}:{}", self.get_name()));
     }
 
     pub fn prefix_dependencies(&mut self, prefix: &str) {
@@ -74,7 +76,7 @@ impl Phase {
                 depends_on
                     .clone()
                     .iter()
-                    .map(|name| format!("{}:{}", prefix, name))
+                    .map(|name| format!("{prefix}:{name}"))
                     .collect::<Vec<_>>(),
             );
         }
@@ -117,9 +119,16 @@ impl Phase {
         }
     }
 
+    /// Whether or not the phase uses Nix in any way
     pub fn uses_nix(&self) -> bool {
         !self.nix_pkgs.clone().unwrap_or_default().is_empty()
             || !self.nix_libs.clone().unwrap_or_default().is_empty()
+    }
+
+    /// Whether or not the phase runs any docker commands
+    pub fn runs_docker_commands(&self) -> bool {
+        !self.cmds.clone().unwrap_or_default().is_empty()
+            || !self.paths.clone().unwrap_or_default().is_empty()
     }
 
     pub fn depends_on_phase<S: Into<String>>(&mut self, name: S) {
@@ -163,10 +172,12 @@ impl Phase {
     }
 
     pub fn add_cache_directory<S: Into<String>>(&mut self, dir: S) {
-        self.cache_directories = Some(add_to_option_vec(
+        let mut new_directories = prevent_duplicates_vec(add_to_option_vec(
             self.cache_directories.clone(),
             dir.into(),
         ));
+        new_directories.sort();
+        self.cache_directories = Some(new_directories);
     }
 
     pub fn add_path(&mut self, path: String) {
@@ -177,9 +188,13 @@ impl Phase {
         self.nixpkgs_archive = Some(archive);
     }
 
-    pub fn pin(&mut self) {
+    pub fn pin(&mut self, use_legacy_openssl: bool) {
         if self.uses_nix() && self.nixpkgs_archive.is_none() {
-            self.nixpkgs_archive = Some(NIXPKGS_ARCHIVE.to_string());
+            self.nixpkgs_archive = if use_legacy_openssl {
+                Some(NIXPACKS_ARCHIVE_LEGACY_OPENSSL.to_string())
+            } else {
+                Some(NIXPKGS_ARCHIVE.to_string())
+            }
         }
 
         self.cmds = pin_option_vec(&self.cmds);
@@ -211,7 +226,7 @@ impl StartPhase {
     }
 
     pub fn run_in_slim_image(&mut self) {
-        self.run_image = Some(DEBIAN_SLIM_IMAGE.to_string());
+        self.run_image = Some(STANDALONE_IMAGE.to_string());
     }
 
     pub fn add_file_dependency<S: Into<String>>(&mut self, file: S) {
@@ -234,14 +249,6 @@ fn pin_option_vec(vec: &Option<Vec<String>>) -> Option<Vec<String>> {
     }
 }
 
-/// Removes all the `"..."`'s or `"@auto"`'s from the `original`
-fn remove_autos_from_vec(original: Vec<String>) -> Vec<String> {
-    original
-        .into_iter()
-        .filter(|x| x != "@auto" && x != "...")
-        .collect::<Vec<_>>()
-}
-
 fn add_to_option_vec<T>(values: Option<Vec<T>>, v: T) -> Vec<T> {
     if let Some(mut values) = values {
         values.push(v);
@@ -259,29 +266,8 @@ fn add_multiple_to_option_vec<T: Clone>(values: Option<Vec<T>>, new_values: Vec<
     }
 }
 
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    fn vs(v: Vec<&str>) -> Vec<String> {
-        v.into_iter()
-            .map(std::string::ToString::to_string)
-            .collect()
-    }
-
-    #[test]
-    fn test_remove_autos_from_vec() {
-        assert_eq!(
-            vs(vec!["a", "b", "c"]),
-            remove_autos_from_vec(vs(vec!["a", "b", "c"]))
-        );
-        assert_eq!(
-            vs(vec!["a", "c"]),
-            remove_autos_from_vec(vs(vec!["a", "...", "c"]))
-        );
-        assert_eq!(
-            vs(vec!["a", "c"]),
-            remove_autos_from_vec(vs(vec!["@auto", "a", "...", "c", "@auto"]))
-        );
-    }
+#[allow(clippy::needless_pass_by_value)]
+fn prevent_duplicates_vec<T: Clone + Eq + Hash>(values: Vec<T>) -> Vec<T> {
+    let set: HashSet<T> = values.iter().cloned().collect::<HashSet<_>>();
+    set.into_iter().collect()
 }

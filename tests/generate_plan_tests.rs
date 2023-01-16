@@ -61,7 +61,7 @@ fn test_rust_rocket() {
         ])
     );
     assert!(start.cmd.is_some());
-    assert_eq!(start.clone().cmd.unwrap(), "./rocket".to_string());
+    assert_eq!(start.clone().cmd.unwrap(), "./bin/rocket".to_string());
     assert!(start.run_image.is_some());
 }
 
@@ -124,4 +124,15 @@ fn test_zig_gyro() {
         .get(0)
         .unwrap()
         .contains("mkdir /gyro"));
+}
+
+#[test]
+fn test_node_turborepo_custom_app() {
+    let plan = generate_build_plan(
+        "./examples/node-turborepo",
+        vec!["NIXPACKS_TURBO_APP_NAME=docs"],
+        &GeneratePlanOptions::default(),
+    )
+    .unwrap();
+    assert!(plan.start_phase.unwrap().cmd.unwrap().contains("docs"));
 }

@@ -1,12 +1,12 @@
 on:
   push:
     branches:
-    - main
+      - main
     paths-ignore:
-    - 'docs/**'
+      - "docs/**"
   pull_request:
     paths-ignore:
-    - 'docs/**'
+      - "docs/**"
 
 name: CI
 
@@ -14,14 +14,15 @@ jobs:
   check:
     name: Check
     runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '(cargo-release)')"
     steps:
       - name: Cancel Previous Runs
-        uses: styfle/cancel-workflow-action@0.10.0
+        uses: styfle/cancel-workflow-action@0.11.0
         with:
           access_token: ${{ github.token }}
 
       - name: Checkout sources
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: Install stable toolchain
         uses: actions-rs/toolchain@v1
@@ -40,14 +41,15 @@ jobs:
   lints:
     name: Lints
     runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '(cargo-release)')"
     steps:
       - name: Cancel Previous Runs
-        uses: styfle/cancel-workflow-action@0.10.0
+        uses: styfle/cancel-workflow-action@0.11.0
         with:
           access_token: ${{ github.token }}
-          
+
       - name: Checkout sources
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: Install stable toolchain
         uses: actions-rs/toolchain@v1
@@ -56,7 +58,7 @@ jobs:
           toolchain: stable
           override: true
           components: rustfmt, clippy
-          
+
       - uses: Swatinem/rust-cache@v2
 
       - name: Run cargo fmt
@@ -70,7 +72,7 @@ jobs:
         with:
           command: clippy
           # Set linting rules for clippy
-          args: --all-targets --all-features -- -D warnings 
+          args: --all-targets --all-features -- -D warnings
 
   test-plan:
     name: Test Suite
@@ -80,14 +82,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     outputs:
       matrix: ${{ steps.docker-prep.outputs.matrix }}
-    steps:      
+    if: "!contains(github.event.head_commit.message, '(cargo-release)')"
+    steps:
       - name: Cancel Previous Runs
-        uses: styfle/cancel-workflow-action@0.10.0
+        uses: styfle/cancel-workflow-action@0.11.0
         with:
           access_token: ${{ github.token }}
-        
+
       - name: Checkout sources
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: Install stable toolchain
         uses: actions-rs/toolchain@v1
@@ -97,7 +100,7 @@ jobs:
           override: true
 
       - uses: Swatinem/rust-cache@v2
-      
+
       - name: Run cargo test
         uses: actions-rs/cargo@v1
         with:
@@ -116,14 +119,15 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix: ${{fromJson(needs.test-plan.outputs.matrix)}}
-    steps:      
+    if: "!contains(github.event.head_commit.message, '(cargo-release)')"
+    steps:
       - name: Cancel Previous Runs
-        uses: styfle/cancel-workflow-action@0.10.0
+        uses: styfle/cancel-workflow-action@0.11.0
         with:
           access_token: ${{ github.token }}
-        
+
       - name: Checkout sources
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: Install stable toolchain
         uses: actions-rs/toolchain@v1
@@ -146,24 +150,25 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    if: "!contains(github.event.head_commit.message, '(cargo-release)')"
     steps:
       - name: Cancel Previous Runs
-        uses: styfle/cancel-workflow-action@0.10.0
+        uses: styfle/cancel-workflow-action@0.11.0
         with:
           access_token: ${{ github.token }}
-        
-      - name: Checkout sources
-        uses: actions/checkout@v2
 
-      - name: Install 1.57 rust toolchain
+      - name: Checkout sources
+        uses: actions/checkout@v3
+
+      - name: Install 1.60 rust toolchain
         uses: actions-rs/toolchain@v1
         with:
           profile: minimal
-          toolchain: 1.57
+          toolchain: 1.60.0
           override: true
 
       - uses: Swatinem/rust-cache@v2
-      
+
       - name: Run cargo test
         uses: actions-rs/cargo@v1
         with:

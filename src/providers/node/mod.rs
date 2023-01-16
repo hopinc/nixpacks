@@ -1,27 +1,24 @@
-use self::nx::ProjectJson;
+use self::{nx::Nx, turborepo::Turborepo};
 use super::Provider;
-use crate::{
-    nixpacks::{
-        app::App,
-        environment::{Environment, EnvironmentVariables},
-        nix::pkg::Pkg,
-        plan::{
-            phase::{Phase, StartPhase},
-            BuildPlan,
-        },
+use crate::nixpacks::plan::merge::Mergeable;
+use crate::nixpacks::{
+    app::App,
+    environment::{Environment, EnvironmentVariables},
+    nix::pkg::Pkg,
+    plan::{
+        phase::{Phase, StartPhase},
+        BuildPlan,
     },
-    providers::node::nx::NxJson,
 };
-use anyhow::bail;
 use anyhow::Result;
 use path_slash::PathExt;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::{HashMap, HashSet},
-    path::PathBuf,
-};
+use serde_json::Value;
+use std::collections::{HashMap, HashSet};
+
 mod nx;
+mod turborepo;
 
 pub const NODE_OVERLAY: &str = "https://github.com/railwayapp/nix-npm-overlay/archive/main.tar.gz";
 
@@ -29,12 +26,52 @@ const DEFAULT_NODE_PKG_NAME: &str = "nodejs-16_x";
 const AVAILABLE_NODE_VERSIONS: &[u32] = &[14, 16, 18];
 
 const YARN_CACHE_DIR: &str = "/usr/local/share/.cache/yarn/v6";
-const PNPM_CACHE_DIR: &str = "/root/.cache/pnpm";
+const PNPM_CACHE_DIR: &str = "/root/.local/share/pnpm/store/v3";
 const NPM_CACHE_DIR: &str = "/root/.npm";
 const BUN_CACHE_DIR: &str = "/root/.bun";
 const CYPRESS_CACHE_DIR: &str = "/root/.cache/Cypress";
 const NODE_MODULES_CACHE_DIR: &str = "node_modules/.cache";
-const NX_APP_NAME_ENV_VAR: &str = "NX_APP_NAME";
+
+#[derive(Serialize, Deserialize, Default, Debug, Clone)]
+struct TsConfigJson {
+    #[serde(rename = "compilerOptions")]
+    compiler_options: Option<TsConfigCompilerOptions>,
+    extends: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Default, Debug, Clone)]
+struct TsConfigCompilerOptions {
+    incremental: Option<bool>,
+    #[serde(rename = "tsBuildInfoFile")]
+    ts_build_info_file: Option<String>,
+    #[serde(rename = "outDir")]
+    out_dir: Option<String>,
+}
+
+impl Mergeable for TsConfigCompilerOptions {
+    fn merge(
+        c1: &TsConfigCompilerOptions,
+        c2: &TsConfigCompilerOptions,
+    ) -> TsConfigCompilerOptions {
+        let mut new_compileroptions = c1.clone();
+        let compileroptions2 = c2.clone();
+        new_compileroptions.incremental = compileroptions2
+            .incremental
+            .or(new_compileroptions.incremental);
+        new_compileroptions.out_dir = compileroptions2.out_dir.or(new_compileroptions.out_dir);
+        new_compileroptions.ts_build_info_file = compileroptions2
+            .ts_build_info_file
+            .or(new_compileroptions.ts_build_info_file);
+        new_compileroptions
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(untagged)]
+pub enum Workspaces {
+    Array(Vec<String>),
+    Unknown(Value),
+}
 
 #[derive(Serialize, Deserialize, Default, Debug)]
 pub struct PackageJson {
@@ -47,6 +84,14 @@ pub struct PackageJson {
     pub dev_dependencies: Option<HashMap<String, String>>,
     #[serde(rename = "type")]
     pub project_type: Option<String>,
+
+    #[serde(rename = "packageManager")]
+    pub package_manager: Option<String>,
+
+    pub workspaces: Option<Workspaces>,
+
+    #[serde(rename = "cacheDirectories")]
+    pub cache_directories: Option<Vec<String>>,
 }
 
 #[derive(Default, Debug)]
@@ -64,6 +109,10 @@ impl Provider for NodeProvider {
     fn get_build_plan(&self, app: &App, env: &Environment) -> Result<Option<BuildPlan>> {
         // Setup
         let mut setup = Phase::setup(Some(NodeProvider::get_nix_packages(app, env)?));
+
+        if NodeProvider::uses_node_dependency(app, "prisma") {
+            setup.add_nix_pkgs(&[Pkg::new("openssl")]);
+        }
 
         if NodeProvider::uses_node_dependency(app, "puppeteer") {
             // https://gist.github.com/winuxue/cfef08e2f5fe9dfc16a1d67a4ad38a01
@@ -85,7 +134,21 @@ impl Provider for NodeProvider {
         }
 
         // Install
-        let mut install = Phase::install(Some(NodeProvider::get_install_command(app)));
+        let corepack = NodeProvider::uses_corepack(app, env)?;
+        let mut install = Phase::install(if corepack {
+            Some("npm install -g corepack && corepack enable".to_string())
+        } else {
+            NodeProvider::get_install_command(app)
+        });
+
+        if corepack {
+            let install_cmd = NodeProvider::get_install_command(app);
+
+            if let Some(..) = install_cmd {
+                install.add_cmd(install_cmd.unwrap_or_default());
+            }
+        }
+
         install.add_cache_directory(NodeProvider::get_package_manager_cache_dir(app));
         install.add_path("/app/node_modules/.bin".to_string());
 
@@ -96,15 +159,7 @@ impl Provider for NodeProvider {
         }
 
         // Build
-        let mut build = if NodeProvider::is_nx_monorepo(app) {
-            let app_name = NodeProvider::get_nx_app_name(app, env)?.unwrap();
-            Phase::build(Some(format!("npx nx run {}:build:production", app_name)))
-        } else if NodeProvider::has_script(app, "build")? {
-            let pkg_manager = NodeProvider::get_package_manager(app);
-            Phase::build(Some(format!("{} run build", pkg_manager)))
-        } else {
-            Phase::build(None)
-        };
+        let mut build = Phase::build(NodeProvider::get_build_cmd(app, env)?);
 
         // Next build cache directories
         let next_cache_dirs = NodeProvider::find_next_packages(app)?;
@@ -113,12 +168,20 @@ impl Provider for NodeProvider {
             build.add_cache_directory(if dir.is_empty() {
                 next_cache_dir.to_string()
             } else {
-                format!("{}/{}", dir, next_cache_dir)
+                format!("{dir}/{next_cache_dir}")
             });
         }
 
         // Node modules cache directory
         build.add_cache_directory((*NODE_MODULES_CACHE_DIR).to_string());
+        let package_json: PackageJson = app.read_json("package.json").unwrap_or_default();
+        if let Some(cache_directories) = package_json.cache_directories {
+            for dir in cache_directories {
+                build.add_cache_directory(dir);
+            }
+        }
+
+        NodeProvider::cache_tsbuildinfo_file(app, &mut build);
 
         // Start
         let start = NodeProvider::get_start_cmd(app, env)?.map(StartPhase::new);
@@ -150,55 +213,78 @@ impl NodeProvider {
         Ok(false)
     }
 
+    pub fn uses_corepack(app: &App, env: &Environment) -> Result<bool> {
+        let package_json: PackageJson = app.read_json("package.json").unwrap_or_default();
+        let node_pkg = NodeProvider::get_nix_node_pkg(&package_json, app, env)?;
+
+        // Corepack is not supported for Node 14
+        if node_pkg.name.contains("14") {
+            return Ok(false);
+        }
+
+        if let Some(package_manager) = package_json.package_manager {
+            if package_manager.starts_with("npm") {
+                // Fall back to just using the system npm version.
+                return Ok(false);
+            }
+
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+
+    pub fn get_build_cmd(app: &App, env: &Environment) -> Result<Option<String>> {
+        if Nx::is_nx_monorepo(app, env) {
+            if let Some(nx_build_cmd) = Nx::get_nx_build_cmd(app, env) {
+                return Ok(Some(nx_build_cmd));
+            }
+        }
+
+        if Turborepo::is_turborepo(app) {
+            if let Ok(Some(turbo_build_cmd)) = Turborepo::get_actual_build_cmd(app, env) {
+                return Ok(Some(turbo_build_cmd));
+            }
+        }
+
+        if NodeProvider::has_script(app, "build")? {
+            let pkg_manager = NodeProvider::get_package_manager(app);
+            Ok(Some(format!("{pkg_manager} run build")))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn get_start_cmd(app: &App, env: &Environment) -> Result<Option<String>> {
-        if NodeProvider::is_nx_monorepo(app) {
-            let app_name = NodeProvider::get_nx_app_name(app, env)?.unwrap();
-            let output_path = NodeProvider::get_nx_output_path(app, env)?;
-            let project_json = NodeProvider::get_nx_project_json_for_app(app, env)?;
+        let executor = NodeProvider::get_executor(app);
+        let package_json: PackageJson = app.read_json("package.json").unwrap_or_default();
 
-            if let Some(start_target) = project_json.targets.start {
-                if start_target.configurations.is_some()
-                    && start_target.configurations.unwrap().production.is_some()
-                {
-                    return Ok(Some(format!("npx nx run {}:start:production ", app_name)));
-                }
-                return Ok(Some(format!("npx nx run {}:start", app_name)));
+        if Nx::is_nx_monorepo(app, env) {
+            if let Some(nx_start_cmd) = Nx::get_nx_start_cmd(app, env)? {
+                return Ok(Some(nx_start_cmd));
             }
-
-            if project_json.targets.build.executor == "@nrwl/next:build" {
-                return Ok(Some(format!("cd {} && npm run start", output_path)));
+        }
+        if Turborepo::is_turborepo(app) {
+            if let Ok(Some(turbo_start_cmd)) =
+                Turborepo::get_actual_start_cmd(app, env, &package_json)
+            {
+                return Ok(Some(turbo_start_cmd));
             }
-
-            let main = project_json.targets.build.options.main;
-            if let Some(main_path) = main {
-                let current_path = PathBuf::from(main_path.as_str().unwrap());
-                let file_name = current_path.file_stem().unwrap().to_str().unwrap();
-
-                return Ok(Some(format!("node {}/{}.js", output_path, file_name)));
-            }
-            return Ok(Some(format!("node {}/index.js", output_path)));
         }
 
         let package_manager = NodeProvider::get_package_manager(app);
         if NodeProvider::has_script(app, "start")? {
-            return Ok(Some(format!("{} run start", package_manager)));
+            return Ok(Some(format!("{package_manager} run start")));
         }
 
-        let package_json: PackageJson = app.read_json("package.json").unwrap_or_default();
         if let Some(main) = package_json.main {
             if app.includes_file(&main) {
-                if package_manager == "bun" {
-                    return Ok(Some(format!("bun {}", main)));
-                }
-                return Ok(Some(format!("node {}", main)));
+                return Ok(Some(format!("{executor} {main}")));
             }
         }
 
         if app.includes_file("index.js") {
-            if package_manager == "bun" {
-                return Ok(Some("bun index.js".to_string()));
-            }
-            return Ok(Some("node index.js".to_string()));
+            return Ok(Some(format!("{executor} index.js")));
         } else if app.includes_file("index.ts") && package_manager == "bun" {
             return Ok(Some("bun index.ts".to_string()));
         }
@@ -207,7 +293,11 @@ impl NodeProvider {
     }
 
     /// Parses the package.json engines field and returns a Nix package if available
-    pub fn get_nix_node_pkg(package_json: &PackageJson, environment: &Environment) -> Result<Pkg> {
+    pub fn get_nix_node_pkg(
+        package_json: &PackageJson,
+        app: &App,
+        environment: &Environment,
+    ) -> Result<Pkg> {
         let env_node_version = environment.get_config_variable("NODE_VERSION");
 
         let pkg_node_version = package_json
@@ -215,7 +305,14 @@ impl NodeProvider {
             .clone()
             .and_then(|engines| engines.get("node").cloned());
 
-        let node_version = env_node_version.or(pkg_node_version);
+        let nvmrc_node_version = if app.includes_file(".nvmrc") {
+            let nvmrc = app.read_file(".nvmrc")?;
+            Some(nvmrc.trim().replace('v', ""))
+        } else {
+            None
+        };
+
+        let node_version = env_node_version.or(pkg_node_version).or(nvmrc_node_version);
 
         let node_version = match node_version {
             Some(node_version) => node_version,
@@ -254,23 +351,40 @@ impl NodeProvider {
         pkg_manager.to_string()
     }
 
-    pub fn get_install_command(app: &App) -> String {
-        let mut install_cmd = "npm i";
+    pub fn get_package_manager_dlx_command(app: &App) -> String {
+        let pkg_manager = NodeProvider::get_package_manager(app);
+        match pkg_manager.as_str() {
+            "pnpm" => "pnpx",
+            "yarn" => "yarn",
+            _ => "npx",
+        }
+        .to_string()
+    }
+
+    pub fn get_install_command(app: &App) -> Option<String> {
+        if !app.includes_file("package.json") {
+            return None;
+        }
+
+        let mut install_cmd = "npm i".to_string();
         let package_manager = NodeProvider::get_package_manager(app);
         if package_manager == "pnpm" {
-            install_cmd = "pnpm i --frozen-lockfile";
+            install_cmd = "pnpm i --frozen-lockfile".to_string();
         } else if package_manager == "yarn" {
+            // TODO: When using Corepack and modern Yarn, we may not have a .yarnrc.yml - need to
+            //       read the Yarn version from stdout after enabling Corepack.
             if app.includes_file(".yarnrc.yml") {
-                install_cmd = "yarn set version berry && yarn install --check-cache";
+                install_cmd = "yarn install --check-cache".to_string();
             } else {
-                install_cmd = "yarn install --frozen-lockfile";
+                install_cmd = "yarn install --frozen-lockfile".to_string();
             }
         } else if app.includes_file("package-lock.json") {
-            install_cmd = "npm ci";
+            install_cmd = "npm ci".to_string();
         } else if app.includes_file("bun.lockb") {
-            install_cmd = "bun i --no-save";
+            install_cmd = "bun i --no-save".to_string();
         }
-        install_cmd.to_string()
+
+        Some(install_cmd)
     }
 
     fn get_package_manager_cache_dir(app: &App) -> String {
@@ -286,6 +400,16 @@ impl NodeProvider {
         }
     }
 
+    fn get_executor(app: &App) -> String {
+        let package_manager = NodeProvider::get_package_manager(app);
+        if package_manager == *"bun" {
+            "bun"
+        } else {
+            "node"
+        }
+        .to_string()
+    }
+
     /// Returns the nodejs nix package and the appropriate package manager nix image.
     pub fn get_nix_packages(app: &App, env: &Environment) -> Result<Vec<Pkg>> {
         let package_json: PackageJson = if app.includes_file("package.json") {
@@ -293,7 +417,7 @@ impl NodeProvider {
         } else {
             PackageJson::default()
         };
-        let node_pkg = NodeProvider::get_nix_node_pkg(&package_json, env)?;
+        let node_pkg = NodeProvider::get_nix_node_pkg(&package_json, app, env)?;
 
         let pm_pkg: Pkg;
         let mut pkgs = Vec::<Pkg>::new();
@@ -413,49 +537,44 @@ impl NodeProvider {
         all_deps
     }
 
-    pub fn is_nx_monorepo(app: &App) -> bool {
-        app.includes_file("nx.json")
-    }
-
-    pub fn get_nx_app_name(app: &App, env: &Environment) -> Result<Option<String>> {
-        if let Some(app_name) = env.get_config_variable(NX_APP_NAME_ENV_VAR) {
-            return Ok(Some(app_name));
+    pub fn cache_tsbuildinfo_file(app: &App, build: &mut Phase) {
+        let mut ts_config: TsConfigJson = app.read_json("tsconfig.json").unwrap_or_default();
+        if let Some(ref extends) = ts_config.extends {
+            let ex: TsConfigJson = app.read_json(extends.as_str()).unwrap_or_default();
+            ts_config.compiler_options = Some(TsConfigCompilerOptions::merge(
+                &ex.compiler_options.unwrap_or_default(),
+                &ts_config.compiler_options.unwrap_or_default(),
+            ));
         }
 
-        if let Ok(nx_json) = app.read_json::<NxJson>("nx.json") {
-            if let Some(default_project) = nx_json.default_project {
-                return Ok(Some(default_project.as_str().unwrap().to_owned()));
+        if let Some(compiler_options) = ts_config.compiler_options {
+            if let Some(incremental) = compiler_options.incremental {
+                // if incremental is enabled
+                if incremental {
+                    let tsbuildinfo =
+                        if let Some(ts_build_info_file) = compiler_options.ts_build_info_file {
+                            // if config file is explicitly provided
+                            ts_build_info_file
+                        } else if let Some(out_dir) = compiler_options.out_dir {
+                            // if it is not provided but outdir is, use that
+                            format!("{out_dir}/tsconfig.tsbuildinfo")
+                        } else {
+                            // if not out dir is set
+                            "tsconfig.tsbuildinfo".to_string()
+                        };
+
+                    if app.includes_file(tsbuildinfo.as_str()) {
+                        build.add_cache_directory(tsbuildinfo);
+                    }
+                }
             }
-        }
-
-        bail!("Could not derive nx app to build and run. Please add a default project to your nx config or set NIXPACKS_{}", NX_APP_NAME_ENV_VAR);
-    }
-
-    pub fn get_nx_project_json_for_app(app: &App, env: &Environment) -> Result<ProjectJson> {
-        let app_name = NodeProvider::get_nx_app_name(app, env)?.unwrap();
-        let project_path = format!("./apps/{}/project.json", app_name);
-        app.read_json::<ProjectJson>(&project_path)
-    }
-
-    pub fn get_nx_output_path(app: &App, env: &Environment) -> Result<String> {
-        let project_json = NodeProvider::get_nx_project_json_for_app(app, env)?;
-        if let Some(output_path) = project_json.targets.build.options.output_path {
-            if let Some(output_path) = output_path.as_str() {
-                return Ok(output_path.to_string());
-            }
-        }
-
-        if let Ok(Some(app_name)) = NodeProvider::get_nx_app_name(app, env) {
-            return Ok(format!("dist/apps/{}", app_name));
         };
-
-        bail!("Could not derive nx output path. Please add an output_path to your project.json");
     }
 }
 
 fn version_number_to_pkg(version: u32) -> String {
     if AVAILABLE_NODE_VERSIONS.contains(&version) {
-        format!("nodejs-{}_x", version)
+        format!("nodejs-{version}_x")
     } else {
         DEFAULT_NODE_PKG_NAME.to_string()
     }
@@ -491,6 +610,7 @@ mod test {
                     name: Some(String::default()),
                     ..Default::default()
                 },
+                &App::new("examples/node")?,
                 &Environment::default()
             )?,
             Pkg::new(DEFAULT_NODE_PKG_NAME)
@@ -508,6 +628,7 @@ mod test {
                     engines: Some(engines_node("*")),
                     ..Default::default()
                 },
+                &App::new("examples/node")?,
                 &Environment::default()
             )?,
             Pkg::new(DEFAULT_NODE_PKG_NAME)
@@ -525,6 +646,7 @@ mod test {
                     engines: Some(engines_node("14")),
                     ..Default::default()
                 },
+                &App::new("examples/node")?,
                 &Environment::default()
             )?,
             Pkg::new("nodejs-14_x")
@@ -542,6 +664,7 @@ mod test {
                     engines: Some(engines_node("18.x")),
                     ..Default::default()
                 },
+                &App::new("examples/node")?,
                 &Environment::default()
             )?,
             Pkg::new("nodejs-18_x")
@@ -554,6 +677,7 @@ mod test {
                     engines: Some(engines_node("14.X")),
                     ..Default::default()
                 },
+                &App::new("examples/node")?,
                 &Environment::default()
             )?,
             Pkg::new("nodejs-14_x")
@@ -571,6 +695,7 @@ mod test {
                     engines: Some(engines_node("18.x.x")),
                     ..Default::default()
                 },
+                &App::new("examples/node")?,
                 &Environment::default()
             )?,
             Pkg::new("nodejs-18_x")
@@ -583,6 +708,7 @@ mod test {
                     engines: Some(engines_node("14.X.x")),
                     ..Default::default()
                 },
+                &App::new("examples/node")?,
                 &Environment::default()
             )?,
             Pkg::new("nodejs-14_x")
@@ -600,6 +726,7 @@ mod test {
                     engines: Some(engines_node("18.4.2")),
                     ..Default::default()
                 },
+                &App::new("examples/node")?,
                 &Environment::default()
             )?,
             Pkg::new("nodejs-18_x")
@@ -612,6 +739,7 @@ mod test {
                     engines: Some(engines_node("14.8.x")),
                     ..Default::default()
                 },
+                &App::new("examples/node")?,
                 &Environment::default()
             )?,
             Pkg::new("nodejs-14_x")
@@ -624,6 +752,7 @@ mod test {
                     engines: Some(engines_node("14.x.8")),
                     ..Default::default()
                 },
+                &App::new("examples/node")?,
                 &Environment::default()
             )?,
             Pkg::new("nodejs-14_x")
@@ -641,6 +770,7 @@ mod test {
                     engines: Some(engines_node(">=14.10.3 <16")),
                     ..Default::default()
                 },
+                &App::new("examples/node")?,
                 &Environment::default()
             )?,
             Pkg::new("nodejs-14_x")
@@ -657,10 +787,28 @@ mod test {
                     name: Some(String::default()),
                     ..Default::default()
                 },
+                &App::new("examples/node")?,
                 &Environment::new(BTreeMap::from([(
                     "NIXPACKS_NODE_VERSION".to_string(),
                     "14".to_string()
                 )]))
+            )?,
+            Pkg::new("nodejs-14_x")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_version_from_nvmrc() -> Result<()> {
+        assert_eq!(
+            NodeProvider::get_nix_node_pkg(
+                &PackageJson {
+                    name: Some(String::default()),
+                    ..Default::default()
+                },
+                &App::new("examples/node-nvmrc")?,
+                &Environment::default()
             )?,
             Pkg::new("nodejs-14_x")
         );
@@ -678,6 +826,7 @@ mod test {
                     engines: Some(engines_node("15")),
                     ..Default::default()
                 },
+                &App::new("examples/node")?,
                 &Environment::default()
             )?
             .name,
@@ -697,7 +846,7 @@ mod test {
             NodeProvider::find_next_packages(&App::new(
                 "./examples/node-monorepo/packages/client"
             )?)?,
-            vec!["".to_string()]
+            vec![String::new()]
         );
 
         Ok(())

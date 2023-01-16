@@ -1,4 +1,4 @@
-FROM debian:bullseye-20220801-slim
+FROM debian:bullseye-slim
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -25,6 +25,8 @@ ENV \
   NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
   NIX_PATH=/nix/var/nix/profiles/per-user/root/channels \
   NIXPKGS_ALLOW_BROKEN=1 \
+  NIXPKGS_ALLOW_UNFREE=1 \
+  NIXPKGS_ALLOW_INSECURE=1 \
   LD_LIBRARY_PATH=/usr/lib \
   CPATH=~/.nix-profile/include:$CPATH \
   LIBRARY_PATH=~/.nix-profile/lib:$LIBRARY_PATH \
