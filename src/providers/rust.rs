@@ -107,18 +107,22 @@ impl RustProvider {
                 build.add_cmd(build_cmd);
 
                 for bin in bins {
-                    build.add_cmd(format!("cp target/{target}/release/{bin}{bin_suffix} bin"));
+                    build.add_cmd(format!(
+                        "cp target/{}/release/{name} bin",
+                        target,
+                        name = bin
+                    ));
                 }
             }
         } else if let Some(workspace) = RustProvider::resolve_cargo_workspace(app, env)? {
             write!(build_cmd, " --package {workspace}")?;
             build.add_cmd(build_cmd);
-            build.add_cmd(format!("cp target/release/{workspace}{bin_suffix} bin"));
+            build.add_cmd(format!("cp target/release/{workspace} bin"));
         } else if let Some(bins) = RustProvider::get_bins(app)? {
             build.add_cmd(build_cmd);
 
             for bin in bins {
-                build.add_cmd(format!("cp target/release/{bin}{bin_suffix} bin"));
+                build.add_cmd(format!("cp target/release/{name} bin", name = bin));
             }
         }
 
@@ -133,25 +137,8 @@ impl RustProvider {
         Ok(build)
     }
 
-    fn get_bin_suffix(app: &App, env: &Environment, _: Option<String>) -> String {
-        // wasm32-wasi binaries are created with .wasm
-        if RustProvider::should_make_wasm32_wasi(app, env) {
-            ".wasm"
-        } else {
-            ""
-        }
-        .into()
-    }
-
     fn get_bins(app: &App) -> Result<Option<Vec<String>>> {
         let mut bins = vec![];
-
-        // Support the main bin
-        if let Some(name) = RustProvider::get_app_name(app)? {
-            if app.includes_file("src/main.rs") {
-                bins.push(name);
-            }
-        }
 
         if app.includes_directory("src/bin") {
             let find_bins = app.find_files("src/bin/*")?;
@@ -169,16 +156,18 @@ impl RustProvider {
 
                 bins.push(bin_name);
             }
+
+            return Ok(Some(bins));
+        } else if let Some(name) = RustProvider::get_app_name(app)? {
+            bins.push(name);
+
+            return Ok(Some(bins));
         }
 
-        if bins.is_empty() {
-            return Ok(None);
-        }
-
-        Ok(Some(bins))
+        Ok(None)
     }
 
-    pub(crate) fn get_start(app: &App, env: &Environment) -> Result<Option<StartPhase>> {
+    fn get_start(app: &App, env: &Environment) -> Result<Option<StartPhase>> {
         if (RustProvider::get_target(app, env)?).is_some() {
             if let Some(workspace) = RustProvider::resolve_cargo_workspace(app, env)? {
                 let mut start = StartPhase::new(format!("./bin/{workspace}"));
@@ -224,7 +213,7 @@ impl RustProvider {
                 let found_bin = bins
                     .into_iter()
                     .find(|bin| bin == &env_bin_name)
-                    .context(format!("Could not find binary named {env_bin_name}"))?;
+                    .context(format!("Could not find binary named {}", env_bin_name))?;
 
                 bin = Some(found_bin);
             } else if let Some(found_bin) = RustProvider::parse_cargo_toml(app)?
@@ -234,10 +223,8 @@ impl RustProvider {
                 bin = Some(found_bin);
             }
 
-            let bin_suffix = RustProvider::get_bin_suffix(app, env, None);
-
             if let Some(bin) = bin {
-                Ok(Some(format!("./bin/{bin}{bin_suffix}")))
+                Ok(Some(format!("./bin/{}", bin)))
             } else {
                 Ok(None)
             }
