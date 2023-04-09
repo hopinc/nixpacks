@@ -128,15 +128,13 @@ impl IncrementalCache {
                 let target_cache_dir = dir.replace('~', "/root");
                 let target_cache_dir_optional = target_cache_dir
                     .split('/')
-                    .into_iter()
                     .filter(|c| !c.is_empty())
                     .map(|c| format!("{c}?"))
                     .collect::<Vec<_>>()
                     .join("/");
 
                 vec![format!(
-                    "COPY --from={} {} {}",
-                    incremental_cahge_image, target_cache_dir_optional, target_cache_dir
+                    "COPY --from={incremental_cahge_image} {target_cache_dir_optional} {target_cache_dir}"
                 )]
             })
             .collect::<Vec<String>>()

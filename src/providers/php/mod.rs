@@ -55,23 +55,44 @@ impl PhpProvider {
             Ok(php_package) => php_package,
             _ => "php".to_string(),
         };
+
+        let php_extensions = PhpProvider::get_php_extensions(app).unwrap_or(vec![]);
+
         let mut pkgs = vec![
-            Pkg::new(&php_pkg),
+            Pkg::new(&format!(
+                r"({}.withExtensions (pe: pe.enabled ++ [{}]))",
+                &php_pkg,
+                php_extensions
+                    .iter()
+                    .map(|ext| format!("pe.all.{ext}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )),
             Pkg::new("perl"),
             Pkg::new("nginx"),
+            Pkg::new("libmysqlclient"),
             Pkg::new(&format!("{}Packages.composer", &php_pkg)),
         ];
-        if let Ok(php_extensions) = PhpProvider::get_php_extensions(app) {
-            for extension in php_extensions {
-                pkgs.push(Pkg::new(&format!("{}Extensions.{extension}", &php_pkg)));
-            }
-        }
+        let ext_pkgs: Vec<String> = php_extensions
+            .iter()
+            .map(|extension| format!("{}Extensions.{extension}", &php_pkg))
+            .collect();
 
         if app.includes_file("package.json") {
             pkgs.append(&mut NodeProvider::get_nix_packages(app, env)?);
         }
 
-        Ok(Phase::setup(Some(pkgs)))
+        {
+            let mut tmp_ext_pkgs = ext_pkgs.iter().map(|pkg| Pkg::new(pkg)).collect();
+            pkgs.append(&mut tmp_ext_pkgs);
+        }
+
+        let mut phase = Phase::setup(Some(pkgs));
+
+        phase.add_pkgs_libs(ext_pkgs);
+        phase.add_pkgs_libs(vec!["libmysqlclient".into()]);
+
+        Ok(phase)
     }
 
     fn get_install(app: &App) -> Phase {
@@ -79,7 +100,7 @@ impl PhpProvider {
             "mkdir -p /var/log/nginx && mkdir -p /var/cache/nginx".to_string(),
         ));
         if app.includes_file("composer.json") {
-            install.add_cmd("composer install".to_string());
+            install.add_cmd("composer install --ignore-platform-reqs".to_string());
         };
         if app.includes_file("package.json") {
             if let Some(install_cmd) = NodeProvider::get_install_command(app) {
@@ -105,19 +126,35 @@ impl PhpProvider {
     }
 
     fn get_start(app: &App) -> StartPhase {
-        StartPhase::new(format!(
-            "([ -e /app/storage ] && chmod -R ugo+w /app/storage); perl {} {} /nginx.conf && echo \"Server starting on port $PORT\" && (php-fpm -y {} & nginx -c /nginx.conf)",
-            app.asset_path("transform-config.pl"),
-            app.asset_path("nginx.template.conf"),
-            app.asset_path("php-fpm.conf"),
-        ))
+        if app.includes_file("nginx.conf") {
+            StartPhase::new(format!(
+                "php-fpm -y {} & nginx -c /app/nginx.conf",
+                app.asset_path("php-fpm.conf")
+            ))
+        } else if app.includes_file("nginx.template.conf") {
+            StartPhase::new(format!(
+                "perl {} /app/nginx.template.conf /nginx.conf && (php-fpm -y {} & nginx -c /nginx.conf)",
+                app.asset_path("prestart.pl"),
+                app.asset_path("php-fpm.conf"),
+            ))
+        } else {
+            StartPhase::new(format!(
+                "perl {} {} /nginx.conf && (php-fpm -y {} & nginx -c /nginx.conf)",
+                app.asset_path("prestart.pl"),
+                app.asset_path("nginx.template.conf"),
+                app.asset_path("php-fpm.conf"),
+            ))
+        }
     }
 
     fn static_assets() -> StaticAssets {
         static_asset_list! {
             "nginx.template.conf" => include_str!("nginx.template.conf"),
-            "transform-config.pl" => include_str!("transform-config.pl"),
-            "php-fpm.conf" => include_str!("php-fpm.conf")
+            "prestart.pl" => include_str!("prestart.pl"),
+            "php-fpm.conf" => include_str!("php-fpm.conf"),
+            "Nixpacks/Nix.pm" => include_str!("Nixpacks/Nix.pm"),
+            "Nixpacks/Config/Template.pm" => include_str!("Nixpacks/Config/Template.pm"),
+            "Nixpacks/Util/ChmodRecursive.pm" => include_str!("Nixpacks/Util/ChmodRecursive.pm")
         }
     }
 
@@ -126,6 +163,10 @@ impl PhpProvider {
         vars.insert("PORT".to_string(), "80".to_string());
         if app.includes_file("artisan") {
             vars.insert("IS_LARAVEL".to_string(), "yes".to_string());
+            vars.insert(
+                "NIXPACKS_PHP_ROOT_DIR".to_string(),
+                "/app/public".to_string(),
+            );
         }
         vars
     }
@@ -150,8 +191,7 @@ impl PhpProvider {
                 "7.4".to_string()
             } else {
                 println!(
-                    "Warning: PHP version {} is not available, using PHP {}",
-                    v, DEFAULT_PHP_VERSION
+                    "Warning: PHP version {v} is not available, using PHP {DEFAULT_PHP_VERSION}"
                 );
                 DEFAULT_PHP_VERSION.to_string()
             }
