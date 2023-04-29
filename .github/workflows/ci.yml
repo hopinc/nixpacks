@@ -1,12 +1,12 @@
-on:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - "docs/**"
-  pull_request:
-    paths-ignore:
-      - "docs/**"
+# on:
+#   push:
+#     branches:
+#       - main
+#     paths-ignore:
+#       - "docs/**"
+#   pull_request:
+#     paths-ignore:
+#       - "docs/**"
 
 name: CI
 

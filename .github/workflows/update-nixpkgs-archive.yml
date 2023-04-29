@@ -1,9 +1,9 @@
 name: Update Nixpkgs Archive
 
-on:
-  schedule:
-    # Every Monday at 5 PM (UTC)
-    - cron: '0 17 * * 1'
+# on:
+#   schedule:
+#     # Every Monday at 5 PM (UTC)
+#     - cron: '0 17 * * 1'
 
 env:
   BRANCH_NAME: auto-update/nixpkgs-archive
