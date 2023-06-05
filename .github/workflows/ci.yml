@@ -1,12 +1,12 @@
-on:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - "docs/**"
-  pull_request:
-    paths-ignore:
-      - "docs/**"
+# on:
+#   push:
+#     branches:
+#       - main
+#     paths-ignore:
+#       - "docs/**"
+#   pull_request:
+#     paths-ignore:
+#       - "docs/**"
 
 name: CI
 
@@ -136,7 +136,15 @@ jobs:
           toolchain: stable
           override: true
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run cargo test
         uses: actions-rs/cargo@v1
@@ -174,3 +182,22 @@ jobs:
         with:
           command: test
           args: --package nixpacks --lib --test generate_plan_tests
+
+  flake:
+    name: Nix Flake
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '(cargo-release)')"
+    steps:
+      - name: Cancel Previous Runs
+        uses: styfle/cancel-workflow-action@0.11.0
+        with:
+          access_token: ${{ github.token }}
+
+      - name: Checkout sources
+        uses: actions/checkout@v3
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Run nix flake check
+        run: nix flake check

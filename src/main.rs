@@ -153,8 +153,6 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    const VERSION: &str = env!("CARGO_PKG_VERSION");
-
     let args = Args::parse();
 
     let pkgs = args
@@ -211,7 +209,7 @@ async fn main() -> Result<()> {
                 PlanFormat::Toml => plan.to_toml()?,
             };
 
-            println!("{}", plan_s);
+            println!("{plan_s}");
         }
         Commands::Detect { path } => {
             let providers = get_plan_providers(&path, env, &options)?;

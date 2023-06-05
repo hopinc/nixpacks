@@ -94,22 +94,14 @@ impl RustProvider {
                 write!(build_cmd, " --package {workspace} --target {target}")?;
 
                 build.add_cmd(build_cmd);
-                build.add_cmd(format!(
-                    "cp target/{}/release/{name} bin",
-                    target,
-                    name = workspace
-                ));
+                build.add_cmd(format!("cp target/{target}/release/{workspace} bin"));
             } else if let Some(bins) = RustProvider::get_bins(app)? {
                 write!(build_cmd, " --target {target}")?;
 
                 build.add_cmd(build_cmd);
 
                 for bin in bins {
-                    build.add_cmd(format!(
-                        "cp target/{}/release/{name} bin",
-                        target,
-                        name = bin
-                    ));
+                    build.add_cmd(format!("cp target/{target}/release/{bin} bin"));
                 }
             }
         } else if let Some(workspace) = RustProvider::resolve_cargo_workspace(app, env)? {
@@ -120,7 +112,7 @@ impl RustProvider {
             build.add_cmd(build_cmd);
 
             for bin in bins {
-                build.add_cmd(format!("cp target/release/{name} bin", name = bin));
+                build.add_cmd(format!("cp target/release/{bin} bin"));
             }
         }
 
@@ -138,6 +130,13 @@ impl RustProvider {
     fn get_bins(app: &App) -> Result<Option<Vec<String>>> {
         let mut bins = vec![];
 
+        // Support the main bin
+        if let Some(name) = RustProvider::get_app_name(app)? {
+            if app.includes_file("src/main.rs") {
+                bins.push(name);
+            }
+        }
+
         if app.includes_directory("src/bin") {
             let find_bins = app.find_files("src/bin/*")?;
 
@@ -154,15 +153,13 @@ impl RustProvider {
 
                 bins.push(bin_name);
             }
-
-            return Ok(Some(bins));
-        } else if let Some(name) = RustProvider::get_app_name(app)? {
-            bins.push(name);
-
-            return Ok(Some(bins));
         }
 
-        Ok(None)
+        if bins.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(bins))
     }
 
     fn get_start(app: &App, env: &Environment) -> Result<Option<StartPhase>> {
@@ -211,7 +208,7 @@ impl RustProvider {
                 let found_bin = bins
                     .into_iter()
                     .find(|bin| bin == &env_bin_name)
-                    .context(format!("Could not find binary named {}", env_bin_name))?;
+                    .context(format!("Could not find binary named {env_bin_name}"))?;
 
                 bin = Some(found_bin);
             } else if let Some(found_bin) = RustProvider::parse_cargo_toml(app)?
@@ -222,7 +219,7 @@ impl RustProvider {
             }
 
             if let Some(bin) = bin {
-                Ok(Some(format!("./bin/{}", bin)))
+                Ok(Some(format!("./bin/{bin}")))
             } else {
                 Ok(None)
             }
@@ -262,16 +259,12 @@ impl RustProvider {
     // Get the rust package version by parsing the `rust-version` field in `Cargo.toml`
     fn get_rust_pkg(app: &App, env: &Environment) -> Result<Pkg> {
         if let Some(version) = env.get_config_variable("RUST_VERSION") {
-            return Ok(Pkg::new(&format!(
-                "rust-bin.stable.\"{}\".default",
-                version
-            )));
+            return Ok(Pkg::new(&format!("rust-bin.stable.\"{version}\".default")));
         }
 
         if let Some(toolchain_file) = RustProvider::get_rust_toolchain_file(app) {
             return Ok(Pkg::new(&format!(
-                "(rust-bin.fromRustupToolchainFile ../{})",
-                toolchain_file
+                "(rust-bin.fromRustupToolchainFile ../{toolchain_file})"
             )));
         }
 

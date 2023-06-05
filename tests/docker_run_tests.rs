@@ -21,7 +21,7 @@ async fn get_container_ids_from_image(image: &str) -> String {
         .arg("-a")
         .arg("-q")
         .arg("--filter")
-        .arg(format!("ancestor={}", image))
+        .arg(format!("ancestor={image}"))
         .output()
         .expect("failed to execute docker ps");
 
@@ -76,7 +76,7 @@ async fn run_image(name: &str, cfg: Option<Config>) -> String {
     if let Some(config) = cfg {
         for (key, value) in config.environment_variables {
             // arg must be processed as str or else we get extra quotes
-            let arg = format!("{}={}", key, value);
+            let arg = format!("{key}={value}");
             cmd.arg("-e").arg(arg);
         }
         if let Some(network) = config.network {
@@ -200,7 +200,7 @@ fn run_postgres() -> Container {
     let mut docker_cmd = Command::new("docker");
 
     let hash = Uuid::new_v4().to_string();
-    let container_name = format!("postgres-{}", hash);
+    let container_name = format!("postgres-{hash}");
     let password = hash;
     let port = "5432";
     // run
@@ -239,10 +239,7 @@ fn run_postgres() -> Container {
                 ("PGHOST".to_string(), container_name.clone()),
                 (
                     "DATABASE_URL".to_string(),
-                    format!(
-                        "postgresql://postgres:{}@{}:{}/postgres",
-                        password, container_name, port
-                    ),
+                    format!("postgresql://postgres:{password}@{container_name}:{port}/postgres"),
                 ),
             ]),
             network: None,
@@ -254,7 +251,7 @@ fn run_mysql() -> Container {
     let mut docker_cmd = Command::new("docker");
 
     let hash = Uuid::new_v4().to_string();
-    let container_name = format!("mysql-{}", hash);
+    let container_name = format!("mysql-{hash}");
     let password = hash;
     // run
     docker_cmd.arg("run");
@@ -338,7 +335,7 @@ async fn test_elixir_no_ecto() {
         .take(64)
         .map(char::from)
         .collect();
-    let secret_env = format!("SECRET_KEY_BASE={}", rand_64_str);
+    let secret_env = format!("SECRET_KEY_BASE={rand_64_str}");
     let name = build_with_build_time_env_vars(
         "./examples/elixir_no_ecto",
         vec![&*secret_env, "MIX_ENV=prod"],
@@ -723,6 +720,13 @@ async fn test_rust_cargo_workspaces_glob() {
 }
 
 #[tokio::test]
+async fn test_rust_multiple_bins() {
+    let name = simple_build("./examples/rust-multiple-bins").await;
+    let output = run_image(&name, None).await;
+    assert!(output.contains("Bin 1"));
+}
+
+#[tokio::test]
 async fn test_go() {
     let name = simple_build("./examples/go").await;
     let output = run_image(&name, None).await;
@@ -812,6 +816,20 @@ async fn test_java_maven() {
 }
 
 #[tokio::test]
+async fn test_php_vanilla() {
+    let name = simple_build("./examples/php-vanilla").await;
+    let output = run_image(&name, None).await;
+    assert!(output.contains("Server starting on port 80"));
+}
+
+#[tokio::test]
+async fn test_scala_sbt() {
+    let name = simple_build("./examples/scala-sbt").await;
+    let output = run_image(&name, None).await;
+    assert!(output.contains("I was compiled by Scala 3"));
+}
+
+#[tokio::test]
 async fn test_zig() {
     let name = simple_build("./examples/zig").await;
     let output = run_image(&name, None).await;
@@ -831,6 +849,13 @@ async fn test_ruby_2() {
     let name = simple_build("./examples/ruby-2").await;
     let output = run_image(&name, None).await;
     assert!(output.contains("Hello from Ruby 2"));
+}
+
+#[tokio::test]
+async fn test_ruby_3() {
+    let name = simple_build("./examples/ruby-3").await;
+    let output = run_image(&name, None).await;
+    assert!(output.contains("Hello from Ruby 3! YJIT is enabled."));
 }
 
 #[tokio::test]
@@ -895,6 +920,14 @@ async fn test_ruby_rails() {
 }
 
 #[tokio::test]
+async fn test_ruby_rails_api_app() {
+    let name = simple_build("./examples/ruby-rails-api-app").await;
+    let output = run_image(&name, None).await;
+
+    assert!(output.contains("Rails 7"));
+}
+
+#[tokio::test]
 async fn test_clojure() {
     let name = simple_build("./examples/clojure").await;
     let output = run_image(&name, None).await;
@@ -906,6 +939,13 @@ async fn test_clojure_ring_app() {
     let name = simple_build("./examples/clojure-ring-app").await;
     let output = run_image(&name, None).await;
     assert_eq!(output, "Started server on port 3000");
+}
+
+#[tokio::test]
+async fn test_clojure_tools_build() {
+    let name = simple_build("./examples/clojure-tools-build").await;
+    let output = run_image(&name, None).await;
+    assert_eq!(output, "Hello, World From Clojure!");
 }
 
 #[tokio::test]
@@ -1006,4 +1046,10 @@ async fn test_django_pipfile() {
     remove_network(network_name);
 
     assert!(output.contains("Running migrations"));
+}
+
+#[tokio::test]
+async fn test_nested_directory() {
+    let name = simple_build("./examples/nested").await;
+    assert!(run_image(&name, None).await.contains("Nested directories!"));
 }

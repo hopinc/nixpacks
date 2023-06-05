@@ -1,22 +1,22 @@
-on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'base/ubuntu/*'
-  pull_request:
-    branches:
-      - main
-    paths:
-      - 'base/ubuntu/*'
-  schedule:
-    - cron:  '0 0 * * 2'
-  workflow_dispatch:
+# on:
+#   push:
+#     branches:
+#       - main
+#     paths:
+#       - 'base/publish/*'
+#   pull_request:
+#     branches:
+#       - main
+#     paths:
+#       - 'base/publish/*'
+#   schedule:
+#     - cron:  '0 0 * * 2'
+#   workflow_dispatch:
 
-name: Publish Ubuntu Base Images
+name: Publish Debian & Ubuntu Base Images
 
 jobs:
-  ubuntu:
+  debian:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -27,10 +27,10 @@ jobs:
     steps:
       - name: Checkout sources
         uses: actions/checkout@v3
-        
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
-        
+
       - name: Set up Docker Buildx
         id: buildx
         uses: docker/setup-buildx-action@v2
@@ -41,13 +41,21 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      
+
       - name: Get current date
         id: date
         run: echo "::set-output name=date::$(date +%s)"
-      
-      - name: Build and push
-        uses: docker/build-push-action@v3
+
+      - name: Build and push [Debian]
+        uses: docker/build-push-action@v4
+        with:
+          context: base/debian
+          platforms: linux/arm64, linux/amd64, linux/386
+          push: ${{ github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+          tags: ghcr.io/railwayapp/nixpacks:debian, ghcr.io/railwayapp/nixpacks:latest, ghcr.io/railwayapp/nixpacks:debian-${{ steps.date.outputs.date }}
+
+      - name: Build and push [Ubuntu]
+        uses: docker/build-push-action@v4
         with:
           context: base/ubuntu
           platforms: linux/arm64, linux/amd64
@@ -57,28 +65,37 @@ jobs:
       - name: Bump base image
         if: ${{ github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
         run: |
+          sed -i 's/nixpacks:debian-.*/nixpacks:debian-${{ steps.date.outputs.date }}";/g' src/nixpacks/images.rs
           sed -i 's/nixpacks:ubuntu-.*/nixpacks:ubuntu-${{ steps.date.outputs.date }}";/g' src/nixpacks/images.rs
-      
+
       - name: Create Pull Request
         if: ${{ github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
-        uses: peter-evans/create-pull-request@v4
+        uses: peter-evans/create-pull-request@v5
         with:
           base: main
           token: ${{ secrets.COMMITTER_TOKEN }}
           commit-message: Bump base image
-          branch: ubuntu-${{ steps.date.outputs.date }}
+          branch: publish-${{ steps.date.outputs.date }}
           delete-branch: true
-          title: Bump Ubuntu base image to `ubuntu-${{ steps.date.outputs.date }}`
+          title: Bump base images to `${{ steps.date.outputs.date }}`
           labels: release/patch
-          
+
       - name: Login to Docker Hub
         uses: docker/login-action@v2
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-           
-      - name: Build and push to Docker Hub
-        uses: docker/build-push-action@v3
+
+      - name: Build and push to Docker Hub [Debian]
+        uses: docker/build-push-action@v4
+        with:
+          context: base/debian
+          platforms: linux/arm64, linux/amd64, linux/386
+          push: ${{ github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+          tags: railwayapp/nixpacks:debian, railwayapp/nixpacks:latest, railwayapp/nixpacks:debian-${{ steps.date.outputs.date }}
+
+      - name: Build and push to Docker Hub [Ubuntu]
+        uses: docker/build-push-action@v4
         with:
           context: base/ubuntu
           platforms: linux/arm64, linux/amd64

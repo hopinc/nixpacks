@@ -119,8 +119,7 @@ impl DockerfileGenerator for BuildPlan {
                 .context("Failed to convert nix file path to slash path.")?;
 
             nix_install_cmds.push(format!(
-                "COPY {nix_file_path} {nix_file_path}\nRUN nix-env -if {nix_file_path} && nix-collect-garbage -d",
-                nix_file_path = nix_file_path
+                "COPY {nix_file_path} {nix_file_path}\nRUN nix-env -if {nix_file_path} && nix-collect-garbage -d"
             ));
         }
         let nix_install_cmds = nix_install_cmds.join("\n");
@@ -169,7 +168,7 @@ impl DockerfileGenerator for BuildPlan {
 
         let phases = plan.get_sorted_phases()?;
 
-        let dockerfile_phases = phases
+        let mut dockerfile_phases = phases
             .into_iter()
             .map(|phase| {
                 let phase_dockerfile = phase
@@ -182,6 +181,25 @@ impl DockerfileGenerator for BuildPlan {
                 Ok(phase_dockerfile)
             })
             .collect::<Result<Vec<_>>>()?;
+
+        let profile_dockerfile = plan
+            .get_sorted_phases()?
+            .into_iter()
+            .map(|phase| {
+                // Ensure paths are available in the environment
+                let profile_dockerfile = if let Some(paths) = &phase.paths {
+                    let joined_paths = paths.join(":");
+                    format!("RUN printf '\\nPATH={joined_paths}:$PATH' >> /root/.profile")
+                } else {
+                    String::new()
+                };
+
+                Ok(profile_dockerfile)
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        dockerfile_phases.extend(profile_dockerfile.iter().cloned());
+
         let dockerfile_phases_str = dockerfile_phases.join("\n");
 
         let start_phase_str = plan
@@ -311,6 +329,7 @@ impl DockerfileGenerator for StartPhase {
                 formatdoc! {"
                   # start
                   FROM {run_image}
+                  ENTRYPOINT [\"/bin/bash\", \"-l\", \"-c\"]
                   WORKDIR {APP_DIR}
                   COPY --from=0 /etc/ssl/certs /etc/ssl/certs
                   RUN true
@@ -357,17 +376,11 @@ impl DockerfileGenerator for Phase {
         };
 
         // Ensure paths are available in the environment
-        let (build_path, run_path) = if let Some(paths) = &phase.paths {
+        let build_path = if let Some(paths) = &phase.paths {
             let joined_paths = paths.join(":");
-            (
-                format!("ENV PATH {joined_paths}:$PATH"),
-                format!(
-                    "RUN printf '\\nPATH={}:$PATH' >> /root/.profile",
-                    joined_paths
-                ),
-            )
+            format!("ENV PATH {joined_paths}:$PATH")
         } else {
-            (String::new(), String::new())
+            String::new()
         };
 
         // Copy over app files
@@ -414,7 +427,7 @@ impl DockerfileGenerator for Phase {
                 .join("\n")
         };
 
-        let dockerfile_stmts = vec![build_path, run_path, phase_copy_cmds.join("\n"), cmds_str]
+        let dockerfile_stmts = vec![build_path, phase_copy_cmds.join("\n"), cmds_str]
             .into_iter()
             .filter(|stmt| !stmt.is_empty())
             .collect::<Vec<_>>()
