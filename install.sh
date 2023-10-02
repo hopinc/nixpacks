@@ -272,7 +272,6 @@ confirm() {
       if [ "$yn" != "y" ] && [ "$yn" != "yes" ]; then
         error 'Aborting (please answer "yes" to continue)'
         exit 1
-      fi
     fi
   fi
 }
@@ -457,7 +456,7 @@ if [ $UNINSTALL == 1 ]; then
 
   info "Removed nixpacks"
   exit 0
-  
+
  fi
 if [ $HELP == 1 ]; then
     echo "${help_text}"

@@ -71,6 +71,7 @@ pub fn get_providers() -> &'static [&'static (dyn Provider)] {
         &StaticfileProvider {},
         &ZigProvider {},
         &ElixirProvider {},
+        &CobolProvider {},
     ]
 }
 

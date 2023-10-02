@@ -8,6 +8,7 @@ use crate::nixpacks::{
     phase::{BuildPhase, InstallPhase, SetupPhase, StartPhase},
 };
 use anyhow::Result;
+use regex::{Match, Regex};
 
 const DEFAULT_ELIXIR_PKG_NAME: &str = "elixir";
 
@@ -22,23 +23,21 @@ impl Provider for ElixirProvider {
         Ok(app.includes_file("mix.exs"))
     }
 
-    fn setup(&self, _app: &App, _env: &Environment) -> Result<Option<SetupPhase>> {
-        Ok(Some(SetupPhase::new(vec![Pkg::new("elixir")])))
-    }
+    fn get_build_plan(&self, app: &App, env: &Environment) -> Result<Option<BuildPlan>> {
+        let mut plan = BuildPlan::default();
 
-    fn install(&self, _app: &App, _env: &Environment) -> Result<Option<InstallPhase>> {
-        let mut install_phase = InstallPhase::new("mix local.hex --force".to_string());
+        let elixir_pkg = ElixirProvider::get_nix_elixir_package(app, env)?;
+        let setup_phase = Phase::setup(Some(vec![elixir_pkg]));
+        plan.add_phase(setup_phase);
+
+        let mut install_phase = Phase::install(Some("mix local.hex --force".to_string()));
         install_phase.add_cmd("mix local.rebar --force".to_string());
         install_phase.add_cmd("mix deps.get".to_string());
-        Ok(Some(install_phase))
-    }
+        plan.add_phase(install_phase);
 
-    fn build(&self, _app: &App, _env: &Environment) -> Result<Option<BuildPhase>> {
-        let build_phase = BuildPhase::new("mix compile".to_string());
-        Ok(Some(build_phase))
-    }
+        let build_phase = Phase::build(Some("mix compile".to_string()));
+        plan.add_phase(build_phase);
 
-    fn start(&self, _app: &App, _env: &Environment) -> Result<Option<StartPhase>> {
         let start_phase = StartPhase::new("mix run --no-halt".to_string());
         plan.set_start_phase(start_phase);
 
