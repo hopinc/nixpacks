@@ -14,7 +14,10 @@ export const sidebarItems: ISidebarSection[] = [
   {
     text: "Guides",
     links: [
-      { text: "Configuring Builds", href: "/docs/guides/configuring-builds" },
+      {
+        text: "Configuring Builds",
+        href: "/docs/guides/configuring-builds",
+      },
     ],
   },
   {
@@ -44,6 +47,7 @@ export const sidebarItems: ISidebarSection[] = [
       { href: "/docs/providers/go", text: "Go" },
       { href: "/docs/providers/haskell", text: "Haskell" },
       { href: "/docs/providers/java", text: "Java" },
+      { href: "/docs/providers/lunatic", text: "Lunatic" },
       { href: "/docs/providers/node", text: "Node" },
       { href: "/docs/providers/php", text: "PHP" },
       { href: "/docs/providers/python", text: "Python" },
@@ -59,7 +63,10 @@ export const sidebarItems: ISidebarSection[] = [
     text: "Deploying",
     links: [
       { text: "Railway", href: "/docs/deploying/railway" },
+      { text: "Flightcontrol", href: "/docs/deploying/flightcontrol" },
       { text: "Easypanel", href: "/docs/deploying/easypanel" },
+      { text: "Coherence", href: "/docs/deploying/coherence" },
+      { text: "PipeOps", href: "/docs/deploying/pipeops" },
     ],
   },
 ];

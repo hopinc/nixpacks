@@ -39,6 +39,7 @@ expression: plan
     "setup": {
       "name": "setup",
       "nixPkgs": [
+        "nodejs_18",
         "bun"
       ],
       "nixOverlays": [
@@ -48,6 +49,6 @@ expression: plan
     }
   },
   "start": {
-    "cmd": "bun index.ts"
+    "cmd": "bun run start"
   }
 }

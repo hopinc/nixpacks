@@ -9,7 +9,6 @@ use crate::{
     providers::{procfile::ProcfileProvider, Provider},
 };
 use anyhow::{bail, Context, Ok, Result};
-use colored::Colorize;
 
 use super::{
     merge::Mergeable,
@@ -18,17 +17,20 @@ use super::{
 
 const NIXPACKS_METADATA: &str = "NIXPACKS_METADATA";
 
+/// Holds plan options defined in config files or existing build plans.
 #[derive(Clone, Default, Debug)]
 pub struct GeneratePlanOptions {
     pub plan: Option<BuildPlan>,
     pub config_file: Option<String>,
 }
 
+/// Holds plan options and providers for a build.
 pub struct NixpacksBuildPlanGenerator<'a> {
     providers: &'a [&'a (dyn Provider)],
     config: GeneratePlanOptions,
 }
 
+/// NixpacksBuildPlanGenerators produce build plans using the options and providers they contain.
 impl<'a> PlanGenerator for NixpacksBuildPlanGenerator<'a> {
     fn generate_plan(&mut self, app: &App, environment: &Environment) -> Result<(BuildPlan, App)> {
         // If the provider defines a build plan in the new format, use that
@@ -37,6 +39,7 @@ impl<'a> PlanGenerator for NixpacksBuildPlanGenerator<'a> {
         Ok(plan)
     }
 
+    /// Combine detected providers with providers specified in config files, environment variables, and CLI arguments.
     fn get_plan_providers(&self, app: &App, env: &Environment) -> Result<Vec<String>> {
         let plan_before_providers = self.get_plan_before_providers(app, env)?;
         let providers = self.get_all_providers(app, env, plan_before_providers.providers)?;
@@ -53,7 +56,7 @@ impl NixpacksBuildPlanGenerator<'_> {
         NixpacksBuildPlanGenerator { providers, config }
     }
 
-    /// Get a build plan from the provider and by applying the config from the environment
+    /// Get a build plan from the provider and by applying a config from the environment.
     fn get_build_plan(&self, app: &App, env: &Environment) -> Result<(BuildPlan, App)> {
         let plan_before_providers = self.get_plan_before_providers(app, env)?;
 
@@ -92,6 +95,7 @@ impl NixpacksBuildPlanGenerator<'_> {
         Ok((plan, app.clone()))
     }
 
+    /// Generate a build plan based on config files, environment variables, and CLI arguments.
     fn get_plan_before_providers(&self, app: &App, env: &Environment) -> Result<BuildPlan> {
         let file_plan = self.read_file_plan(app, env)?;
         let env_plan = BuildPlan::from_environment(env);
@@ -101,6 +105,7 @@ impl NixpacksBuildPlanGenerator<'_> {
         Ok(plan_before_providers)
     }
 
+    /// Use each provider's detect method to determine which providers are needed for the build.
     fn get_detected_providers(&self, app: &App, env: &Environment) -> Result<Vec<String>> {
         let mut providers = Vec::new();
 
@@ -116,18 +121,18 @@ impl NixpacksBuildPlanGenerator<'_> {
         Ok(providers)
     }
 
-    /// Get all the providers that will be used to create the plan
+    /// Get a list of providers that will be used to create the plan.
     pub fn get_all_providers(
         &self,
         app: &App,
         env: &Environment,
-        manually_providers: Option<Vec<String>>,
+        manual_providers: Option<Vec<String>>,
     ) -> Result<Vec<String>> {
         let detected_providers = self.get_detected_providers(app, env)?;
         let provider_names = remove_autos_from_vec(
             fill_auto_in_vec(
                 Some(detected_providers),
-                Some(manually_providers.unwrap_or_else(|| vec!["...".to_string()])),
+                Some(manual_providers.unwrap_or_else(|| vec!["...".to_string()])),
             )
             .unwrap_or_default(),
         );
@@ -135,6 +140,7 @@ impl NixpacksBuildPlanGenerator<'_> {
         Ok(provider_names)
     }
 
+    /// Use all detected and specified providers to generate a build plan.
     fn get_plan_from_providers(
         &self,
         app: &App,
@@ -142,13 +148,6 @@ impl NixpacksBuildPlanGenerator<'_> {
         manual_providers: Option<Vec<String>>,
     ) -> Result<BuildPlan> {
         let provider_names = self.get_all_providers(app, env, manual_providers)?;
-
-        if provider_names.len() > 1 {
-            println!(
-                "{}",
-                "\n Using multiple providers is experimental\n".bright_yellow()
-            );
-        }
 
         let mut plan = BuildPlan::default();
         let mut count = 0;
@@ -188,6 +187,7 @@ impl NixpacksBuildPlanGenerator<'_> {
         Ok(plan)
     }
 
+    /// If a supported config file exists, use it to generate a build plan.
     fn read_file_plan(&self, app: &App, env: &Environment) -> Result<BuildPlan> {
         let file_path = if let Some(file_path) = &self.config.config_file {
             Some(file_path.clone())
@@ -227,14 +227,6 @@ impl NixpacksBuildPlanGenerator<'_> {
             } else {
                 None
             };
-
-        if plan.is_some() {
-            println!(
-                "{}",
-                "\n Nixpacks file based configuration is experimental and may change\n"
-                    .bright_yellow()
-            );
-        }
 
         Ok(plan.unwrap_or_default())
     }

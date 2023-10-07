@@ -262,7 +262,7 @@ impl RubyProvider {
             return Ok(format!("ruby-{}", value.get(1).unwrap().as_str()));
         }
         let re_gemfile_lock =
-            Regex::new(r#"ruby ((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))[^>]"#).unwrap();
+            Regex::new(r"ruby ((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))[^>]").unwrap();
         let gemfile_lock = app.read_file("Gemfile.lock").unwrap_or_default();
         if let Some(value) = re_gemfile_lock.captures(&gemfile_lock) {
             return Ok(format!("ruby-{}", value.get(1).unwrap().as_str()));
@@ -296,8 +296,7 @@ impl RubyProvider {
 
     fn uses_asset_pipeline(&self, app: &App) -> Result<bool> {
         if app.includes_file("Gemfile") {
-            let gemfile = app.read_file("Gemfile").unwrap_or_default();
-            return Ok(gemfile.contains("sprockets") || gemfile.contains("propshaft"));
+            return Ok(self.uses_gem_dep(app, "sprockets") || self.uses_gem_dep(app, "propshaft"));
         }
         Ok(false)
     }

@@ -20,12 +20,14 @@ use std::{
     string::ToString,
 };
 
+/// The build plan config file format to use.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum PlanFormat {
     Json,
     Toml,
 }
 
+/// Arguments passed to `nixpacks`.
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 #[command(propagate_version = true)]
@@ -70,6 +72,8 @@ struct Args {
     config: Option<String>,
 }
 
+/// The valid subcommands passed to `nixpacks`, and their arguments.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Commands {
     /// Generate a build plan for an app
@@ -137,6 +141,14 @@ enum Commands {
         #[arg(long)]
         cache_from: Option<String>,
 
+        /// Image to consider as cache sources
+        #[arg(long)]
+        docker_host: Option<String>,
+
+        /// Image to consider as cache sources
+        #[arg(long)]
+        docker_tls_verify: Option<String>,
+
         /// Enable writing cache metadata into the output image
         #[arg(long)]
         inline_cache: bool,
@@ -144,6 +156,16 @@ enum Commands {
         /// Do not error when no start command can be found
         #[arg(long)]
         no_error_without_start: bool,
+
+        /// Limit the CPU CFS (Completely Fair Scheduler) quota.
+        /// Passed directly to the docker build command
+        #[arg(long)]
+        cpu_quota: Option<String>,
+
+        /// Memory limit.
+        /// Passed directly to the docker build command
+        #[arg(long)]
+        memory: Option<String>,
 
         /// Display more info during build
         #[arg(long, short)]
@@ -165,9 +187,9 @@ async fn main() -> Result<()> {
     // CLI build plan
     let mut cli_plan = BuildPlan::default();
     if !args.pkgs.is_empty() || !args.libs.is_empty() || !args.apt.is_empty() {
-        let mut setup = Phase::setup(Some(vec![pkgs, vec![Pkg::new("...")]].concat()));
-        setup.apt_pkgs = Some(vec![args.apt, vec!["...".to_string()]].concat());
-        setup.nix_libs = Some(vec![args.libs, vec!["...".to_string()]].concat());
+        let mut setup = Phase::setup(Some([pkgs, [Pkg::new("...")].to_vec()].to_vec().concat()));
+        setup.apt_pkgs = Some([args.apt, ["...".to_string()].to_vec()].to_vec().concat());
+        setup.nix_libs = Some([args.libs, ["...".to_string()].to_vec()].to_vec().concat());
         cli_plan.add_phase(setup);
     }
     if let Some(install_cmds) = args.install_cmd {
@@ -201,6 +223,7 @@ async fn main() -> Result<()> {
     };
 
     match args.command {
+        // Produce a build plan for a project and print it to stdout.
         Commands::Plan { path, format } => {
             let plan = generate_build_plan(&path, env, &options)?;
 
@@ -211,10 +234,12 @@ async fn main() -> Result<()> {
 
             println!("{plan_s}");
         }
+        // Detect which providers should be used to build a project and print them to stdout.
         Commands::Detect { path } => {
             let providers = get_plan_providers(&path, env, &options)?;
             println!("{}", providers.join(", "));
         }
+        // Generate a Dockerfile and builds a container, using any specified build options.
         Commands::Build {
             path,
             name,
@@ -228,8 +253,12 @@ async fn main() -> Result<()> {
             no_cache,
             incremental_cache_image,
             cache_from,
+            docker_host,
+            docker_tls_verify,
             inline_cache,
             no_error_without_start,
+            cpu_quota,
+            memory,
             verbose,
         } => {
             let verbose = verbose || args.env.contains(&"NIXPACKS_VERBOSE=1".to_string());
@@ -254,8 +283,12 @@ async fn main() -> Result<()> {
                 current_dir,
                 inline_cache,
                 cache_from,
+                docker_host,
+                docker_tls_verify,
                 no_error_without_start,
                 incremental_cache_image,
+                cpu_quota,
+                memory,
                 verbose,
             };
             create_docker_image(&path, env, &options, build_options).await?;
@@ -265,6 +298,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Creates a key for storing image layers in the Docker cache.
 fn get_default_cache_key(path: &str) -> Result<Option<String>> {
     let current_dir = env::current_dir()?;
     let source = current_dir.join(path).canonicalize();

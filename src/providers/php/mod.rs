@@ -56,7 +56,8 @@ impl PhpProvider {
             _ => "php".to_string(),
         };
 
-        let php_extensions = PhpProvider::get_php_extensions(app).unwrap_or(vec![]);
+        let mut php_extensions = PhpProvider::get_php_extensions(app).unwrap_or(vec![]);
+        php_extensions.sort_unstable();
 
         let mut pkgs = vec![
             Pkg::new(&format!(
@@ -154,7 +155,9 @@ impl PhpProvider {
             "php-fpm.conf" => include_str!("php-fpm.conf"),
             "Nixpacks/Nix.pm" => include_str!("Nixpacks/Nix.pm"),
             "Nixpacks/Config/Template.pm" => include_str!("Nixpacks/Config/Template.pm"),
-            "Nixpacks/Util/ChmodRecursive.pm" => include_str!("Nixpacks/Util/ChmodRecursive.pm")
+            "Nixpacks/Util/ChmodRecursive.pm" => include_str!("Nixpacks/Util/ChmodRecursive.pm"),
+            "Nixpacks/Util/Laravel.pm" => include_str!("Nixpacks/Util/Laravel.pm"),
+            "Nixpacks/Util/Logger.pm" => include_str!("Nixpacks/Util/Logger.pm")
         }
     }
 
@@ -205,9 +208,11 @@ impl PhpProvider {
 
     fn get_php_extensions(app: &App) -> Result<Vec<String>> {
         let composer_json: ComposerJson = app.read_json("composer.json")?;
+        let version = PhpProvider::get_php_version(app)?;
         let mut extensions = Vec::new();
         for extension in composer_json.require.keys() {
-            if extension.starts_with("ext-") {
+            // ext-json is included by default in PHP >= 8.0 (and not available in Nix) so skip over it
+            if extension.starts_with("ext-") && (version == "7.4" || extension != "ext-json") {
                 extensions.push(
                     extension
                         .strip_prefix("ext-")

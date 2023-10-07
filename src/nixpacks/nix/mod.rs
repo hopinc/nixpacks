@@ -6,13 +6,14 @@ use crate::nixpacks::plan::phase::{Phase, Phases};
 pub mod pkg;
 
 // This line is automatically updated.
-// Last Modified: 2023-01-02 17:04:24 UTC+0000
-// https://github.com/NixOS/nixpkgs/commit/293a28df6d7ff3dec1e61e37cc4ee6e6c0fb0847
-pub const NIXPKGS_ARCHIVE: &str = "293a28df6d7ff3dec1e61e37cc4ee6e6c0fb0847";
+// Last Modified: 2023-09-17 17:13:39 UTC+0000
+// https://github.com/NixOS/nixpkgs/commit/5148520bfab61f99fd25fb9ff7bfbb50dad3c9db
+pub const NIXPKGS_ARCHIVE: &str = "5148520bfab61f99fd25fb9ff7bfbb50dad3c9db";
 
 // Version of the Nix archive that uses OpenSSL 1.1
 pub const NIXPACKS_ARCHIVE_LEGACY_OPENSSL: &str = "a0b7e70db7a55088d3de0cc370a59f9fbcc906c3";
 
+/// Contains all the data needed to generate a Nix expression file for installing Nix dependencies.
 #[derive(Eq, PartialEq, Default, Debug, Clone)]
 struct NixGroup {
     archive: Option<String>,
@@ -22,6 +23,7 @@ struct NixGroup {
     files: Vec<String>,
 }
 
+/// Collect all Nix packages based on the nixpkgs revision they should be fetched from.
 fn group_nix_packages_by_archive(phases: &[Phase]) -> Vec<NixGroup> {
     let mut archive_to_packages: BTreeMap<Option<String>, NixGroup> = BTreeMap::new();
 
@@ -56,6 +58,7 @@ fn group_nix_packages_by_archive(phases: &[Phase]) -> Vec<NixGroup> {
         .collect()
 }
 
+/// Turn the Nix dependencies for each phase into a Nix expression that installs them.
 pub fn create_nix_expressions_for_phases(phases: &Phases) -> BTreeMap<String, String> {
     let archive_to_packages = group_nix_packages_by_archive(
         &phases
@@ -72,6 +75,7 @@ pub fn create_nix_expressions_for_phases(phases: &Phases) -> BTreeMap<String, St
         })
 }
 
+/// Generates the filenames for all the Nix expressions used to install Nix dependencies for each phase.
 pub fn nix_file_names_for_phases(phases: &Phases) -> Vec<String> {
     let archives = phases
         .values()
@@ -81,6 +85,7 @@ pub fn nix_file_names_for_phases(phases: &Phases) -> Vec<String> {
     archives.iter().map(nix_file_name).collect()
 }
 
+/// Returns all the Nix expression files used to install Nix dependencies for each phase.
 pub fn setup_files_for_phases(phases: &Phases) -> Vec<String> {
     let groups = group_nix_packages_by_archive(
         &phases
@@ -95,6 +100,7 @@ pub fn setup_files_for_phases(phases: &Phases) -> Vec<String> {
     })
 }
 
+/// Generates the filename for each Nix expression file.
 fn nix_file_name(archive: &Option<String>) -> String {
     match archive {
         Some(archive) => format!("nixpkgs-{archive}.nix"),
@@ -102,6 +108,7 @@ fn nix_file_name(archive: &Option<String>) -> String {
     }
 }
 
+/// Generates an expression that installs Nix packages in the container environment and makes them available in PATH.
 fn nix_expression_for_group(group: &NixGroup) -> String {
     let archive = group
         .archive

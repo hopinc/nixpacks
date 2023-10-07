@@ -337,7 +337,7 @@ async fn test_elixir_no_ecto() {
         .collect();
     let secret_env = format!("SECRET_KEY_BASE={rand_64_str}");
     let name = build_with_build_time_env_vars(
-        "./examples/elixir_no_ecto",
+        "./examples/elixir-phx-no-ecto",
         vec![&*secret_env, "MIX_ENV=prod"],
     )
     .await;
@@ -437,7 +437,7 @@ async fn test_node_nx_express() {
 async fn test_node_custom_version() {
     let name = simple_build("./examples/node-custom-version").await;
     let output = run_image(&name, None).await;
-    assert!(output.contains("Node version: v18"));
+    assert!(output.contains("Node version: v20"));
 }
 
 #[tokio::test]
@@ -445,6 +445,36 @@ async fn test_node_canvas() {
     let name = simple_build("./examples/node-canvas").await;
     let output = run_image(&name, None).await;
     assert!(output.contains("Hello from Node canvas"));
+}
+
+#[tokio::test]
+async fn test_node_moon_custom_build() {
+    let name = build_with_build_time_env_vars(
+        "./examples/node-moon-monorepo",
+        vec![
+            "NIXPACKS_MOON_APP_NAME=server",
+            "NIXPACKS_MOON_BUILD_TASK=compile",
+        ],
+    )
+    .await;
+
+    assert!(run_image(&name, None).await.contains("Server listening at"));
+}
+
+#[tokio::test]
+async fn test_node_moon_custom_start() {
+    let name = build_with_build_time_env_vars(
+        "./examples/node-moon-monorepo",
+        vec![
+            "NIXPACKS_MOON_APP_NAME=client",
+            "NIXPACKS_MOON_START_TASK=serve",
+        ],
+    )
+    .await;
+
+    assert!(run_image(&name, None)
+        .await
+        .contains("ready - started server on 0.0.0.0:3000"));
 }
 
 #[tokio::test]
@@ -460,10 +490,82 @@ async fn test_prisma_postgres() {
     // Attach the postgres instance to the network
     attach_container_to_network(n.name, container_name.clone());
 
-    // Build the Django example
+    // Build the basic example, a function that calls the database
     let name = simple_build("./examples/node-prisma-postgres").await;
 
-    // Run the Rails example on the attached network
+    // Run the example on the attached network
+    let output = run_image(
+        &name,
+        Some(Config {
+            environment_variables: c.config.unwrap().environment_variables,
+            network: Some(network_name.clone()),
+        }),
+    )
+    .await;
+
+    // Cleanup containers and networks
+    stop_and_remove_container(container_name);
+    remove_network(network_name);
+
+    assert!(output.contains("My post content"));
+}
+
+#[tokio::test]
+async fn test_bun_prisma_postgres() {
+    // Create the network
+    let n = create_network();
+    let network_name = n.name.clone();
+
+    // Create the postgres instance
+    let c = run_postgres();
+    let container_name = c.name.clone();
+
+    // Attach the postgres instance to the network
+    attach_container_to_network(n.name, container_name.clone());
+
+    // Build the basic example, a function that calls the database
+    let name = simple_build("./examples/node-bun-prisma").await;
+
+    // Run the example on the attached network
+    let output = run_image(
+        &name,
+        Some(Config {
+            environment_variables: c.config.unwrap().environment_variables,
+            network: Some(network_name.clone()),
+        }),
+    )
+    .await;
+
+    // Cleanup containers and networks
+    stop_and_remove_container(container_name);
+    remove_network(network_name);
+
+    println!("OUTPUT = {output}");
+
+    assert!(output.contains("All migrations have been successfully applied"));
+}
+
+#[tokio::test]
+async fn test_prisma_postgres_npm_v9() {
+    // This test is similar to the prisma_postgres test, but uses npm 9
+    // This is because npm 9 handles node-gyp differently, and we want to make
+    // sure that we can still build node-gyp packages with npm 9
+
+    // Create the network
+    let n = create_network();
+    let network_name = n.name.clone();
+
+    // Create the postgres instance
+    let c = run_postgres();
+    let container_name = c.name.clone();
+
+    // Attach the postgres instance to the network
+    attach_container_to_network(n.name, container_name.clone());
+
+    // Build the basic example, a function that calls the database
+    let name = simple_build("./examples/node-prisma-postgres-npm-v9").await;
+
+    // Run the example on the attached network
     let output = run_image(
         &name,
         Some(Config {
@@ -484,7 +586,7 @@ async fn test_prisma_postgres() {
 async fn test_yarn_custom_version() {
     let name = simple_build("./examples/node-yarn-custom-node-version").await;
     let output = run_image(&name, None).await;
-    assert!(output.contains("Node version: v14"));
+    assert!(output.contains("Node version: v16"));
 }
 
 #[tokio::test]
@@ -644,10 +746,24 @@ async fn test_django_mysql() {
 }
 
 #[tokio::test]
+async fn test_lunatic_basic() {
+    let name = simple_build("./examples/lunatic-basic").await;
+    let output = run_image(&name, None).await;
+    assert!(output.contains("PING-PONG"));
+}
+
+#[tokio::test]
 async fn test_python_poetry() {
     let name = simple_build("./examples/python-poetry").await;
     let output = run_image(&name, None).await;
     assert!(output.contains("Hello from Python-Poetry"));
+}
+
+#[tokio::test]
+async fn test_python_pdm() {
+    let name = simple_build("./examples/python-pdm").await;
+    let output = run_image(&name, None).await;
+    assert!(output.contains("Hello from Python-PDM"));
 }
 
 #[tokio::test]
@@ -727,6 +843,13 @@ async fn test_rust_multiple_bins() {
 }
 
 #[tokio::test]
+async fn test_gleam_basic() {
+    let name = simple_build("./examples/basic_gleam").await;
+    let output = run_image(&name, None).await;
+    assert!(output.contains("Hello from Gleam!"));
+}
+
+#[tokio::test]
 async fn test_go() {
     let name = simple_build("./examples/go").await;
     let output = run_image(&name, None).await;
@@ -773,6 +896,31 @@ async fn test_cowsay() {
     assert!(output.contains("Hello World"));
 }
 
+// This test is intentionally written to fail
+#[tokio::test]
+async fn test_docker_host() {
+    let name = Uuid::new_v4().to_string();
+    let result = create_docker_image(
+        "./examples/shell-hello",
+        Vec::new(),
+        &GeneratePlanOptions::default(),
+        &DockerBuilderOptions {
+            name: Some(name.clone()),
+            quiet: true,
+            docker_host: Some("tcp://0.0.0.0:2375".to_string()),
+            docker_tls_verify: Some("0".to_string()),
+            ..Default::default()
+        },
+    )
+    .await;
+
+    // Expect the creation of the Docker image to fail
+    assert!(result.is_err());
+
+    let output = run_image(&name, None).await;
+    assert!(!output.contains("Hello World"));
+}
+
 #[tokio::test]
 async fn test_staticfile() {
     let name = simple_build("./examples/staticfile").await;
@@ -809,6 +957,14 @@ async fn test_dart() {
 }
 
 #[tokio::test]
+async fn test_java_gradle_8() {
+    let name = simple_build("./examples/java-gradle-8").await;
+    let output = run_image(&name, None).await;
+    assert!(output.contains("Gradle 8"));
+    assert!(output.contains("Hello from Java Gradle"));
+}
+
+#[tokio::test]
 async fn test_java_maven() {
     let name = simple_build("./examples/java-maven").await;
     let output = run_image(&name, None).await;
@@ -834,14 +990,6 @@ async fn test_zig() {
     let name = simple_build("./examples/zig").await;
     let output = run_image(&name, None).await;
     assert!(output.contains("Hello from Zig"));
-}
-
-#[tokio::test]
-async fn test_zig_gyro() {
-    let name = simple_build("./examples/zig-gyro").await;
-    let output = run_image(&name, None).await;
-    assert!(output.contains("Hello from Zig"));
-    assert!(output.contains("The URI scheme of GitHub is https."));
 }
 
 #[tokio::test]
@@ -1052,4 +1200,11 @@ async fn test_django_pipfile() {
 async fn test_nested_directory() {
     let name = simple_build("./examples/nested").await;
     assert!(run_image(&name, None).await.contains("Nested directories!"));
+}
+
+#[tokio::test]
+async fn test_ffmpeg() {
+    let name = simple_build("./examples/apt-ffmpeg").await;
+    let output = run_image(&name, None).await;
+    assert!(output.contains("ffmpeg version"));
 }

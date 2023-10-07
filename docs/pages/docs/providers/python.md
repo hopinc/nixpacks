@@ -4,7 +4,12 @@ title: Python
 
 # {% $markdoc.frontmatter.title %}
 
-Python is detected if a `main.py` OR `requirements.txt` OR `pyproject.toml` file is found.
+Python is detected if any of the following files are found
+
+- `main.py`
+- `requirements.txt`
+- `pyproject.toml`
+- `Pipfile`
 
 ## Setup
 
@@ -21,6 +26,7 @@ The version can be overridden by
 
 - Setting the `NIXPACKS_PYTHON_VERSION` environment variable
 - Setting the version in a `.python-version` file
+- Setting the version in a `runtime.txt` file
 
 ## Install
 
@@ -40,6 +46,12 @@ If `pyproject.toml` (w/ `poetry.lock`)
 
 ```
 poetry install --no-dev --no-interactive --no-ansi
+```
+
+If `pyproject.toml` (w/ `pdm.lock`)
+
+```
+pdm install --prod
 ```
 
 If `Pipfile` (w/ `Pipfile.lock`)

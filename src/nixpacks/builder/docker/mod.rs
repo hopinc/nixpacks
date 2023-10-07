@@ -1,5 +1,6 @@
 use super::ImageBuilder;
 
+/// Holds options for generating a Docker image.
 #[derive(Clone, Default, Debug)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct DockerBuilderOptions {
@@ -17,7 +18,11 @@ pub struct DockerBuilderOptions {
     pub current_dir: bool,
     pub no_error_without_start: bool,
     pub incremental_cache_image: Option<String>,
+    pub cpu_quota: Option<String>,
+    pub memory: Option<String>,
     pub verbose: bool,
+    pub docker_host: Option<String>,
+    pub docker_tls_verify: Option<String>,
 }
 
 mod cache;

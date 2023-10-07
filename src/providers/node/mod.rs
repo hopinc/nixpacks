@@ -1,4 +1,4 @@
-use self::{nx::Nx, turborepo::Turborepo};
+use self::{moon::Moon, nx::Nx, turborepo::Turborepo};
 use super::Provider;
 use crate::nixpacks::plan::merge::Mergeable;
 use crate::nixpacks::{
@@ -11,19 +11,20 @@ use crate::nixpacks::{
     },
 };
 use anyhow::Result;
+use node_semver::Range;
 use path_slash::PathExt;
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
+mod moon;
 mod nx;
 mod turborepo;
 
 pub const NODE_OVERLAY: &str = "https://github.com/railwayapp/nix-npm-overlay/archive/main.tar.gz";
 
-const DEFAULT_NODE_PKG_NAME: &str = "nodejs-16_x";
-const AVAILABLE_NODE_VERSIONS: &[u32] = &[14, 16, 18];
+const DEFAULT_NODE_VERSION: u32 = 18;
+const AVAILABLE_NODE_VERSIONS: &[u32] = &[14, 16, 18, 20];
 
 const YARN_CACHE_DIR: &str = "/usr/local/share/.cache/yarn/v6";
 const PNPM_CACHE_DIR: &str = "/root/.local/share/pnpm/store/v3";
@@ -112,6 +113,7 @@ impl Provider for NodeProvider {
 
         if NodeProvider::uses_node_dependency(app, "prisma") {
             setup.add_nix_pkgs(&[Pkg::new("openssl")]);
+            setup.add_pkgs_libs(vec!["openssl".into()]);
         }
 
         if NodeProvider::uses_node_dependency(app, "puppeteer") {
@@ -144,7 +146,7 @@ impl Provider for NodeProvider {
         if corepack {
             let install_cmd = NodeProvider::get_install_command(app);
 
-            if let Some(..) = install_cmd {
+            if install_cmd.is_some() {
                 install.add_cmd(install_cmd.unwrap_or_default());
             }
         }
@@ -182,6 +184,10 @@ impl Provider for NodeProvider {
         }
 
         NodeProvider::cache_tsbuildinfo_file(app, &mut build);
+
+        if Moon::is_moon_repo(app, env) {
+            build.add_cache_directory(".moon/cache/outputs");
+        }
 
         // Start
         let start = NodeProvider::get_start_cmd(app, env)?.map(StartPhase::new);
@@ -235,6 +241,10 @@ impl NodeProvider {
     }
 
     pub fn get_build_cmd(app: &App, env: &Environment) -> Result<Option<String>> {
+        if Moon::is_moon_repo(app, env) {
+            return Ok(Some(Moon::get_build_cmd(app, env)));
+        }
+
         if Nx::is_nx_monorepo(app, env) {
             if let Some(nx_build_cmd) = Nx::get_nx_build_cmd(app, env) {
                 return Ok(Some(nx_build_cmd));
@@ -259,11 +269,16 @@ impl NodeProvider {
         let executor = NodeProvider::get_executor(app);
         let package_json: PackageJson = app.read_json("package.json").unwrap_or_default();
 
+        if Moon::is_moon_repo(app, env) {
+            return Ok(Some(Moon::get_start_cmd(app, env)));
+        }
+
         if Nx::is_nx_monorepo(app, env) {
             if let Some(nx_start_cmd) = Nx::get_nx_start_cmd(app, env)? {
                 return Ok(Some(nx_start_cmd));
             }
         }
+
         if Turborepo::is_turborepo(app) {
             if let Ok(Some(turbo_start_cmd)) =
                 Turborepo::get_actual_start_cmd(app, env, &package_json)
@@ -298,6 +313,7 @@ impl NodeProvider {
         app: &App,
         environment: &Environment,
     ) -> Result<Pkg> {
+        let default_node_pkg_name = version_number_to_pkg(DEFAULT_NODE_VERSION);
         let env_node_version = environment.get_config_variable("NODE_VERSION");
 
         let pkg_node_version = package_json
@@ -316,27 +332,16 @@ impl NodeProvider {
 
         let node_version = match node_version {
             Some(node_version) => node_version,
-            None => return Ok(Pkg::new(DEFAULT_NODE_PKG_NAME)),
+            None => return Ok(Pkg::new(default_node_pkg_name.as_str())),
         };
 
-        // Any version will work, use latest
+        // Any version will work, use default
         if node_version == "*" {
-            return Ok(Pkg::new(DEFAULT_NODE_PKG_NAME));
+            return Ok(Pkg::new(default_node_pkg_name.as_str()));
         }
 
-        // This also supports 18.x.x, or any number in place of the x.
-        let re = Regex::new(r"^(\d*)(?:\.?(?:\d*|[xX]?)?)(?:\.?(?:\d*|[xX]?)?)").unwrap();
-        if let Some(node_pkg) = parse_regex_into_pkg(&re, &node_version) {
-            return Ok(Pkg::new(node_pkg.as_str()));
-        }
-
-        // Parse `>=14.10.3 <16` into nodejs-14_x
-        let re = Regex::new(r"^>=(\d+)").unwrap();
-        if let Some(node_pkg) = parse_regex_into_pkg(&re, &node_version) {
-            return Ok(Pkg::new(node_pkg.as_str()));
-        }
-
-        Ok(Pkg::new(DEFAULT_NODE_PKG_NAME))
+        let node_pkg = parse_node_version_into_pkg(&node_version);
+        return Ok(Pkg::new(node_pkg.as_str()));
     }
 
     pub fn get_package_manager(app: &App) -> String {
@@ -423,15 +428,19 @@ impl NodeProvider {
         let mut pkgs = Vec::<Pkg>::new();
 
         let package_manager = NodeProvider::get_package_manager(app);
-        if package_manager != "bun" {
-            pkgs.push(node_pkg);
-        }
+        pkgs.push(node_pkg);
+
         if package_manager == "pnpm" {
             let lockfile = app.read_file("pnpm-lock.yaml").unwrap_or_default();
             if lockfile.starts_with("lockfileVersion: 5.3") {
                 pm_pkg = Pkg::new("pnpm-6_x");
-            } else {
+            } else if lockfile.starts_with("lockfileVersion: 5.4") {
                 pm_pkg = Pkg::new("pnpm-7_x");
+            } else {
+                // pnpm v8 uses lockfile v6 as default, it appears as
+                // lockfileVersion: '6.0'
+                // in the lockfile. Take the quotes into account in the future.
+                pm_pkg = Pkg::new("pnpm-8_x");
             }
         } else if package_manager == "yarn" {
             pm_pkg = Pkg::new("yarn-1_x");
@@ -442,8 +451,11 @@ impl NodeProvider {
             let lockfile = app.read_file("package-lock.json").unwrap_or_default();
             if lockfile.contains("\"lockfileVersion\": 1") {
                 pm_pkg = Pkg::new("npm-6_x");
-            } else {
+            } else if lockfile.contains("\"lockfileVersion\": 2") {
                 pm_pkg = Pkg::new("npm-8_x");
+            } else {
+                // npm v9 uses lockfile v3 as default
+                pm_pkg = Pkg::new("npm-9_x");
             }
         };
         pkgs.push(pm_pkg.from_overlay(NODE_OVERLAY));
@@ -531,8 +543,8 @@ impl NodeProvider {
             .map(|dev_deps| dev_deps.keys().cloned().collect::<Vec<String>>())
             .unwrap_or_default();
 
-        all_deps.extend(deps.into_iter());
-        all_deps.extend(dev_deps.into_iter());
+        all_deps.extend(deps);
+        all_deps.extend(dev_deps);
 
         all_deps
     }
@@ -574,22 +586,29 @@ impl NodeProvider {
 
 fn version_number_to_pkg(version: u32) -> String {
     if AVAILABLE_NODE_VERSIONS.contains(&version) {
-        format!("nodejs-{version}_x")
+        format!("nodejs_{version}")
     } else {
-        DEFAULT_NODE_PKG_NAME.to_string()
+        format!("nodejs_{DEFAULT_NODE_VERSION}")
     }
 }
 
-fn parse_regex_into_pkg(re: &Regex, node_version: &str) -> Option<String> {
-    let matches: Vec<_> = re.captures_iter(node_version).collect();
-    if let Some(captures) = matches.get(0) {
-        match captures[1].parse::<u32>() {
-            Ok(version) => return Some(version_number_to_pkg(version)),
-            Err(_e) => {}
+fn parse_node_version_into_pkg(node_version: &str) -> String {
+    let default_node_pkg_name = version_number_to_pkg(DEFAULT_NODE_VERSION);
+    let range: Range = node_version.parse().unwrap_or_else(|_| {
+        println!("Warning: node version {node_version} is not valid, using default node version {default_node_pkg_name}");
+        Range::parse(DEFAULT_NODE_VERSION.to_string()).unwrap()
+    });
+    let mut available_node_versions = AVAILABLE_NODE_VERSIONS.to_vec();
+    // use newest node version first
+    available_node_versions.sort_by(|a, b| b.cmp(a));
+    for version_number in available_node_versions {
+        let version_range_string = format!("{version_number}.x.x");
+        let version_range: Range = version_range_string.parse().unwrap();
+        if version_range.allows_any(&range) {
+            return version_number_to_pkg(version_number);
         }
     }
-
-    None
+    default_node_pkg_name
 }
 
 #[cfg(test)]
@@ -613,7 +632,7 @@ mod test {
                 &App::new("examples/node")?,
                 &Environment::default()
             )?,
-            Pkg::new(DEFAULT_NODE_PKG_NAME)
+            Pkg::new(version_number_to_pkg(DEFAULT_NODE_VERSION).as_str())
         );
 
         Ok(())
@@ -631,7 +650,7 @@ mod test {
                 &App::new("examples/node")?,
                 &Environment::default()
             )?,
-            Pkg::new(DEFAULT_NODE_PKG_NAME)
+            Pkg::new(version_number_to_pkg(DEFAULT_NODE_VERSION).as_str())
         );
 
         Ok(())
@@ -649,7 +668,7 @@ mod test {
                 &App::new("examples/node")?,
                 &Environment::default()
             )?,
-            Pkg::new("nodejs-14_x")
+            Pkg::new("nodejs_14")
         );
 
         Ok(())
@@ -667,7 +686,7 @@ mod test {
                 &App::new("examples/node")?,
                 &Environment::default()
             )?,
-            Pkg::new("nodejs-18_x")
+            Pkg::new("nodejs_18")
         );
 
         assert_eq!(
@@ -680,7 +699,7 @@ mod test {
                 &App::new("examples/node")?,
                 &Environment::default()
             )?,
-            Pkg::new("nodejs-14_x")
+            Pkg::new("nodejs_14")
         );
 
         Ok(())
@@ -698,7 +717,7 @@ mod test {
                 &App::new("examples/node")?,
                 &Environment::default()
             )?,
-            Pkg::new("nodejs-18_x")
+            Pkg::new("nodejs_18")
         );
 
         assert_eq!(
@@ -711,7 +730,7 @@ mod test {
                 &App::new("examples/node")?,
                 &Environment::default()
             )?,
-            Pkg::new("nodejs-14_x")
+            Pkg::new("nodejs_14")
         );
 
         Ok(())
@@ -729,7 +748,7 @@ mod test {
                 &App::new("examples/node")?,
                 &Environment::default()
             )?,
-            Pkg::new("nodejs-18_x")
+            Pkg::new("nodejs_18")
         );
 
         assert_eq!(
@@ -742,7 +761,7 @@ mod test {
                 &App::new("examples/node")?,
                 &Environment::default()
             )?,
-            Pkg::new("nodejs-14_x")
+            Pkg::new("nodejs_14")
         );
 
         assert_eq!(
@@ -755,7 +774,7 @@ mod test {
                 &App::new("examples/node")?,
                 &Environment::default()
             )?,
-            Pkg::new("nodejs-14_x")
+            Pkg::new("nodejs_14")
         );
 
         Ok(())
@@ -773,7 +792,79 @@ mod test {
                 &App::new("examples/node")?,
                 &Environment::default()
             )?,
-            Pkg::new("nodejs-14_x")
+            Pkg::new("nodejs_14")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_engine_caret_range() -> Result<()> {
+        assert_eq!(
+            NodeProvider::get_nix_node_pkg(
+                &PackageJson {
+                    name: Some(String::default()),
+                    engines: Some(engines_node("^14.10.3")),
+                    ..Default::default()
+                },
+                &App::new("examples/node")?,
+                &Environment::default()
+            )?,
+            Pkg::new("nodejs_14")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_engine_multi_range() -> Result<()> {
+        assert_eq!(
+            NodeProvider::get_nix_node_pkg(
+                &PackageJson {
+                    name: Some(String::default()),
+                    engines: Some(engines_node("1.2.3 || 14.10.3")),
+                    ..Default::default()
+                },
+                &App::new("examples/node")?,
+                &Environment::default()
+            )?,
+            Pkg::new("nodejs_14")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_engine_multi_satisfied_range() -> Result<()> {
+        assert_eq!(
+            NodeProvider::get_nix_node_pkg(
+                &PackageJson {
+                    name: Some(String::default()),
+                    engines: Some(engines_node("14.10.3 || 18.10.0")),
+                    ..Default::default()
+                },
+                &App::new("examples/node")?,
+                &Environment::default()
+            )?,
+            Pkg::new("nodejs_18")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_invalid_node_version() -> Result<()> {
+        assert_eq!(
+            NodeProvider::get_nix_node_pkg(
+                &PackageJson {
+                    name: Some(String::default()),
+                    engines: Some(engines_node("abc")),
+                    ..Default::default()
+                },
+                &App::new("examples/node")?,
+                &Environment::default()
+            )?,
+            Pkg::new("nodejs_18")
         );
 
         Ok(())
@@ -793,7 +884,7 @@ mod test {
                     "14".to_string()
                 )]))
             )?,
-            Pkg::new("nodejs-14_x")
+            Pkg::new("nodejs_14")
         );
 
         Ok(())
@@ -810,7 +901,7 @@ mod test {
                 &App::new("examples/node-nvmrc")?,
                 &Environment::default()
             )?,
-            Pkg::new("nodejs-14_x")
+            Pkg::new("nodejs_14")
         );
 
         Ok(())
@@ -830,7 +921,7 @@ mod test {
                 &Environment::default()
             )?
             .name,
-            DEFAULT_NODE_PKG_NAME
+            version_number_to_pkg(DEFAULT_NODE_VERSION).as_str()
         );
 
         Ok(())

@@ -12,6 +12,7 @@ use anyhow::Result;
 use regex::{Match, Regex};
 
 const DEFAULT_ELIXIR_PKG_NAME: &str = "elixir";
+const ELIXIR_NIXPKGS_ARCHIVE: &str = "ef99fa5c5ed624460217c31ac4271cfb5cb2502c";
 
 pub struct ElixirProvider;
 
@@ -28,7 +29,8 @@ impl Provider for ElixirProvider {
         let mut plan = BuildPlan::default();
 
         let elixir_pkg = ElixirProvider::get_nix_elixir_package(app, env)?;
-        let setup_phase = Phase::setup(Some(vec![elixir_pkg]));
+        let mut setup_phase = Phase::setup(Some(vec![elixir_pkg]));
+        setup_phase.set_nix_archive(ELIXIR_NIXPKGS_ARCHIVE.to_string());
         plan.add_phase(setup_phase);
 
         let mut install_phase = Phase::install(Some("mix local.hex --force".to_string()));
@@ -58,7 +60,7 @@ impl ElixirProvider {
         let mix_exs_content = app.read_file("mix.exs")?;
         let custom_version = env.get_config_variable("ELIXIR_VERSION");
 
-        let mix_elixir_version_regex = Regex::new(r#"(elixir:[\s].*[> ])([0-9|\.]*)"#)?;
+        let mix_elixir_version_regex = Regex::new(r"(elixir:[\s].*[> ])([0-9|\.]*)")?;
 
         // If not from env variable, get it from the .elixir-version file then try to parse from mix.exs
         let custom_version = if custom_version.is_some() {
@@ -98,7 +100,8 @@ impl ElixirProvider {
             ("1", "11") => Ok(Pkg::new("elixir_1_11")),
             ("1", "12") => Ok(Pkg::new("elixir_1_12")),
             ("1", "13") => Ok(Pkg::new("elixir_1_13")),
-            ("1", "14") => Ok(Pkg::new("elixir_1_14")),
+            ("1", "14") => Ok(Pkg::new("elixir")),
+            ("1", "15") => Ok(Pkg::new("elixir_1_15")),
             _ => Ok(Pkg::new(DEFAULT_ELIXIR_PKG_NAME)),
         }
     }
