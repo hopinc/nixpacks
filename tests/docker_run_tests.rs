@@ -437,7 +437,7 @@ async fn test_node_nx_express() {
 async fn test_node_custom_version() {
     let name = simple_build("./examples/node-custom-version").await;
     let output = run_image(&name, None).await;
-    assert!(output.contains("Node version: v20"));
+    assert!(output.contains("Node version: v21"));
 }
 
 #[tokio::test]
@@ -969,6 +969,27 @@ async fn test_java_maven() {
     let name = simple_build("./examples/java-maven").await;
     let output = run_image(&name, None).await;
     assert!(output.contains("Built with Spring Boot"));
+}
+
+#[tokio::test]
+async fn test_java_spring_boot_3() {
+    let name = simple_build("./examples/java-spring-boot-3").await;
+    let output = run_image(&name, None).await;
+    assert!(output.contains("Started HelloSpringApplication"));
+}
+
+#[tokio::test]
+async fn test_java_spring_boot_2() {
+    let name = simple_build("./examples/java-spring-boot-2").await;
+    let output = run_image(&name, None).await;
+    assert!(output.contains("Started HelloSpringApplication"));
+}
+
+#[tokio::test]
+async fn test_java_spring_boot_1() {
+    let name = simple_build("./examples/java-spring-boot-1").await;
+    let output = run_image(&name, None).await;
+    assert!(output.contains("Started HelloSpringApplication"));
 }
 
 #[tokio::test]
